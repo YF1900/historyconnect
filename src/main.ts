@@ -100,6 +100,7 @@ const state = {
   tracking: false,
   acc: 0,
   selected: '' as string,
+  stampFilter: { pref: '', genre: '', status: 'all' as 'all' | 'todo' | 'done' },
 };
 
 /* ---------------- 地図 ---------------- */
@@ -1613,6 +1614,48 @@ function renderCastle(id: string): void {
   );
 }
 
+/* スタンプ帳のジャンル。スポットの「種類」の記載から機械的に分類する（1か所が複数ジャンルに入ることがある） */
+const GENRES: { id: string; label: string; short: string; re: RegExp }[] = [
+  { id: 'castle', label: '城・城跡', short: '城', re: /城郭|城柵|グスク|陣跡|海城/ },
+  { id: 'museum', label: '博物館・資料館', short: '博物館', re: /博物館|資料館|記念館|学習施設/ },
+  { id: 'shrine', label: '寺院・神社', short: '寺社', re: /寺院|神社|信仰|参詣|祭祀|御嶽/ },
+  { id: 'kofun', label: '古墳', short: '古墳', re: /古墳/ },
+  { id: 'site', label: '遺跡・史跡', short: '遺跡', re: /遺跡|貝塚|官衙|宮殿|政庁|関所|碑|出土地|跡/ },
+  { id: 'battle', label: '古戦場・戦跡', short: '戦跡', re: /戦跡|古戦場|合戦|戦場/ },
+  { id: 'modern', label: '近代・産業遺産', short: '近代', re: /産業|鉱山|炭鉱|近代建築|交通|軍港|海軍|博覧会|政治施設|邸宅|収容所/ },
+  { id: 'memorial', label: '追悼・平和', short: '追悼', re: /追悼|被爆|慰霊|災害遺構|記念公園/ },
+  { id: 'town', label: '町並み・庭園・学び舎', short: '町並み', re: /集落|町並み|庭園|藩校|私塾|学問|教育|都市/ },
+];
+const genreLabel = (id: string) => GENRES.find((g) => g.id === id)?.label ?? 'その他';
+
+interface StampItem {
+  key: string;
+  name: string;
+  prefs: string[];
+  genres: string[];
+  href: string;
+  /** 名城の番号（名城のみ） */
+  no?: number;
+}
+
+/** スタンプを押せる場所の一覧（同じ対象は名城にまとめる） */
+function stampItems(l: Library): StampItem[] {
+  const out: StampItem[] = l.castles.map((c) => {
+    const extra = c.same.flatMap((id) => (l.spotById.get(id) ? GENRES.filter((g) => g.re.test(l.spotById.get(id)!.kind)).map((g) => g.id) : []));
+    return { key: c.id, name: c.t, prefs: c.pref.split('・'), genres: [...new Set(['castle', ...extra])], href: `#/castle/${c.id}`, no: c.n };
+  });
+  for (const sp of l.spots) {
+    if (l.castleOf.has(sp.id)) continue;
+    const g = GENRES.filter((x) => x.re.test(sp.kind)).map((x) => x.id);
+    out.push({ key: sp.id, name: sp.t, prefs: [sp.pref], genres: g.length ? g : ['other'], href: `#/spot/${sp.id}` });
+  }
+  for (const p of places) {
+    if (l.castleOf.has(p.id) || l.spots.some((sp) => sp.place === p.id)) continue;
+    out.push({ key: p.id, name: p.name, prefs: [p.prefecture], genres: [p.kind === 'castle' ? 'castle' : 'museum'], href: `#/place/${p.id}` });
+  }
+  return out;
+}
+
 function renderStamps(): void {
   const main = detailShell('スタンプ帳');
   const l = needLibrary(main);
@@ -1624,54 +1667,96 @@ function renderStamps(): void {
     return;
   }
   const msg = h('p', { class: 'status', role: 'status' });
-  const series = (from: number, to: number, title: string) => {
-    const list = l.castles.filter((c) => c.n >= from && c.n <= to);
-    const pers = list.filter((c) => stamps.get(c.id)?.personal).length;
-    const off = list.filter((c) => stamps.get(c.id)?.official).length;
+  const all = stampItems(l);
+  const f = state.stampFilter;
+  const items = all.filter(
+    (it) =>
+      (!f.pref || it.prefs.includes(f.pref)) &&
+      (!f.genre || it.genres.includes(f.genre)) &&
+      (f.status === 'all' || (f.status === 'done') === !!(stamps.get(it.key)?.personal || stamps.get(it.key)?.official)),
+  );
+  const setF = (patch: Partial<typeof f>) => {
+    Object.assign(state.stampFilter, patch);
+    renderStamps();
+  };
+  const filtered = !!(f.pref || f.genre || f.status !== 'all');
+
+  const cell = (it: StampItem) => {
+    const r = stamps.get(it.key);
+    return h(
+      'a',
+      { href: it.href, class: `cell${r?.personal ? ' cell-p' : ''}${r?.official ? ' cell-o' : ''}`, 'aria-label': `${it.no ? `${it.no} ` : ''}${it.name}${r?.personal ? '、個人スタンプ済み' : ''}${r?.official ? '、公式スタンプ写真あり' : ''}` },
+      h('span', { class: 'cell-n' }, it.no ? String(it.no) : it.genres.map((g) => GENRES.find((x) => x.id === g)?.short ?? 'その他').join('・')),
+      h('span', { class: 'cell-t' }, it.name),
+      f.pref ? null : h('span', { class: 'cell-pref' }, it.prefs.join('・')),
+      h('span', { class: 'cell-m', 'aria-hidden': 'true' }, `${r?.personal ? '訪' : ''}${r?.official ? '城' : ''}`),
+    );
+  };
+  const section = (title: string, list: StampItem[], officialTotal = false) => {
+    if (!list.length) return null;
+    const pers = list.filter((it) => stamps.get(it.key)?.personal).length;
+    const off = list.filter((it) => stamps.get(it.key)?.official).length;
     return [
-      h('h2', {}, title),
-      h('p', { class: 'progress' }, h('span', {}, `個人スタンプ ${pers}/100`), h('span', {}, `公式スタンプ写真 ${off}/100`)),
-      h(
-        'div',
-        { class: 'stamp-grid' },
-        list.map((c) => {
-          const r = stamps.get(c.id);
-          return h(
-            'a',
-            { href: `#/castle/${c.id}`, class: `cell${r?.personal ? ' cell-p' : ''}${r?.official ? ' cell-o' : ''}`, 'aria-label': `${c.n} ${c.t}${r?.personal ? '、個人スタンプ済み' : ''}${r?.official ? '、公式スタンプ写真あり' : ''}` },
-            h('span', { class: 'cell-n' }, String(c.n)),
-            h('span', { class: 'cell-t' }, c.t),
-            h('span', { class: 'cell-m', 'aria-hidden': 'true' }, `${r?.personal ? '訪' : ''}${r?.official ? '城' : ''}`),
-          );
-        }),
-      ),
+      h('h2', {}, `${title}（${list.length}）`),
+      h('p', { class: 'progress' }, h('span', {}, `個人スタンプ ${pers}/${list.length}`), officialTotal ? h('span', {}, `公式スタンプ写真 ${off}/${list.length}`) : null),
+      h('div', { class: 'stamp-grid' }, list.map(cell)),
     ];
   };
-  const others = [...stamps.values()].filter((r) => !r.key.startsWith('JC-') && r.personal);
+
+  const prefSelect = h(
+    'select',
+    { class: 'inp', 'aria-label': '都道府県で絞り込む', onchange: (e: Event) => setF({ pref: (e.target as HTMLSelectElement).value }) },
+    h('option', { value: '' }, 'すべての都道府県'),
+    l.prefs.map((pf) => {
+      const n = all.filter((it) => it.prefs.includes(pf) && (!f.genre || it.genres.includes(f.genre))).length;
+      return h('option', { value: pf, selected: f.pref === pf, disabled: n === 0 }, `${pf}（${n}）`);
+    }),
+  );
+  const genreChip = (id: string, label: string) => {
+    const n = all.filter((it) => (!f.pref || it.prefs.includes(f.pref)) && (!id || it.genres.includes(id))).length;
+    const on = f.genre === id;
+    return h('button', { type: 'button', class: `chip${on ? ' chip-on' : ''}`, 'aria-pressed': on ? 'true' : 'false', disabled: n === 0 && !on, onclick: () => setF({ genre: id }) }, `${label} ${n}`);
+  };
+  const statusChip = (id: 'all' | 'todo' | 'done', label: string) =>
+    h('button', { type: 'button', class: `chip${f.status === id ? ' chip-on' : ''}`, 'aria-pressed': f.status === id ? 'true' : 'false', onclick: () => setF({ status: id }) }, label);
+
+  const meijo = items.filter((it) => it.no);
+  const others = items.filter((it) => !it.no);
+
   const importInput = h('input', { type: 'file', accept: 'application/json,.json', class: 'visually-hidden', id: 'stamp-import' });
   importInput.addEventListener('change', async () => {
-    const f = importInput.files?.[0];
-    if (!f) return;
+    const file = importInput.files?.[0];
+    if (!file) return;
     msg.textContent = '読み込んでいます…';
     try {
-      const r = await importStamps(f);
+      const r = await importStamps(file);
       msg.textContent = `読み込みました：個人スタンプ${r.personal}件、公式スタンプ写真${r.official}件${r.skipped ? `（読み込めなかった項目${r.skipped}件）` : ''}。`;
       setTimeout(() => location.hash.startsWith('#/stamps') && renderStamps(), 1500);
     } catch (e) {
       msg.textContent = (e as Error).message;
     }
   });
+
   add(
     main,
     h('h1', {}, 'スタンプ帳'),
-    h('p', { class: 'note' }, 'スタンプと写真は、この端末のブラウザの中にだけ保存されます。外部には送信しません。ブラウザのデータを消すと記録も消えるため、ときどき書き出しておくと安心です。'),
+    h('p', { class: 'note' }, 'スタンプと写真は、この端末のブラウザの中にだけ保存されます。外部には送信しません。'),
+    h(
+      'div',
+      { class: 'filters', role: 'group', 'aria-label': '絞り込み' },
+      h('label', { class: 'fld' }, '都道府県', prefSelect),
+      h('p', { class: 'fld-label' }, 'ジャンル'),
+      h('div', { class: 'chips' }, genreChip('', 'すべて'), GENRES.map((g) => genreChip(g.id, g.label)), all.some((it) => it.genres.includes('other')) ? genreChip('other', 'その他') : null),
+      h('p', { class: 'fld-label' }, '記録'),
+      h('div', { class: 'chips' }, statusChip('all', 'すべて'), statusChip('todo', 'まだ'), statusChip('done', 'スタンプ済み')),
+      filtered ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => setF({ pref: '', genre: '', status: 'all' }) }, '絞り込みを解除') : null,
+    ),
     h('p', { class: 'legend-inline' }, h('span', { class: 'cell-m' }, '訪'), ' 個人スタンプ　', h('span', { class: 'cell-m' }, '城'), ' 公式スタンプの写真記録'),
-    series(1, 100, '日本100名城®'),
-    series(101, 200, '続日本100名城®'),
-    h('h2', {}, `そのほかの場所（${others.length}）`),
-    others.length
-      ? h('div', { class: 'cards' }, others.map((r) => (l.spotById.has(r.key) ? spotCard(l.spotById.get(r.key)!, `訪問 ${r.personal!.visited ?? r.personal!.at}`) : placeById.has(r.key) ? placeCard(placeById.get(r.key)!, `訪問 ${r.personal!.visited ?? r.personal!.at}`) : null)))
-      : h('p', { class: 'muted' }, '歴史スポットや施設の画面から、個人スタンプを押せます。'),
+    items.length ? null : h('p', { class: 'status' }, '条件に合う場所はありません。絞り込みを変えてみてください。'),
+    section('日本100名城®', meijo.filter((it) => it.no! <= 100), true),
+    section('続日本100名城®', meijo.filter((it) => it.no! > 100), true),
+    section(f.genre && f.genre !== 'castle' ? genreLabel(f.genre) : 'そのほかの場所', others),
+    h('p', { class: 'muted' }, 'ジャンルは各場所の「種類」の記載から自動で分類しています。1か所が複数のジャンルに入ることがあります。'),
     h('h2', {}, 'バックアップ'),
     h('p', { class: 'muted' }, '機種変更などのときに、記録をファイルに書き出して別の端末で読み込めます。ファイルには公式スタンプの写真も含まれます。個人の記録用として保管し、公開・共有しないでください。'),
     h(

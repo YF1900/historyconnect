@@ -254,3 +254,10 @@ button { font: inherit; }
 .select-overlay { bottom: 30px; }
 @media (min-width: 900px) { .select-overlay { right: auto; width: 380px; } }
 @media (min-width: 900px) { .explore { height: calc(100dvh - 104px); } }
+
+/* ---- スタンプ帳の絞り込み ---- */
+.filters { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
+.fld-label { font-size: 0.85rem; margin: 10px 0 4px; }
+.filters .chips { margin: 0; }
+.chip[disabled] { opacity: 0.4; }
+.cell-pref { color: #888; font-size: 0.7rem; }
