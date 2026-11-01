@@ -196,6 +196,26 @@ for (const e of emperors) {
   if (!e.pid) e.pid = o.pid;
 }
 
+// ---------- 日本100名城®・続日本100名城® ----------
+const castles = lines('castles.txt').map((l) => {
+  const [n, t, pref, links] = l.split('|');
+  const same: string[] = [], related: string[] = [];
+  for (const x of (links ?? '').split(',').filter(Boolean)) {
+    const id = x.replace(/^~/, '');
+    if (!(spotById.has(id) || pilotPlaceIds.has(id))) err(`名城 ${n} の対応先がない ${id}`);
+    (x.startsWith('~') ? related : same).push(id);
+  }
+  return { id: `JC-${String(n).padStart(3, '0')}`, n: Number(n), t, pref, same, related };
+});
+castles.forEach((c, i) => { if (c.n !== i + 1) err(`名城の番号が連続していない: ${c.n}`); });
+const ownerOf = new Map<string, string>();
+for (const c of castles) for (const id of c.same) {
+  if (ownerOf.has(id)) err(`同じ対象が複数の名城に対応: ${id}`);
+  ownerOf.set(id, c.id);
+  const sp = spotById.get(id);
+  if (sp) sp.castle = c.id;
+}
+
 // 試験運用データの人物と人物リストの対応（氏名の完全一致のみ）
 const pilot: Record<string, string> = {};
 for (const pp of PILOT_PEOPLE) {
@@ -208,7 +228,7 @@ const expect: [string, number, number][] = [
   ['出来事', events.length, 294], ['スポット', spots.length, 160], ['人物', Object.keys(people).length, 1891 + 33],
   ['人物―出来事', pe.length, 441], ['人物―スポット', ps.length, 103],
   ['出来事―スポット', events.reduce((a, e) => a + e.spots.length, 0), 208],
-  ['探究テーマ', themes.length, 42], ['天皇（行）', emperors.length, 131], ['都道府県', prefs.length, 47],
+  ['探究テーマ', themes.length, 42], ['名城', castles.length, 200], ['天皇（行）', emperors.length, 131], ['都道府県', prefs.length, 47],
 ];
 for (const [k, got, want] of expect) if (got !== want) err(`${k}の件数 ${got}（期待値 ${want}）`);
 
@@ -218,7 +238,7 @@ if (errors.length) {
 }
 
 mkdirSync(OUT, { recursive: true });
-const lib = { version: '2026-11-01', refs, eras, events, prefs, spots, people, pe, ps, themes, emperorSecs, emperors, pilot };
+const lib = { version: '2026-11-01', refs, eras, events, prefs, spots, people, pe, ps, themes, emperorSecs, emperors, pilot, castles };
 writeFileSync(new URL('library.json', OUT), JSON.stringify(lib));
 console.log(
   `library.json を生成：${expect.map(([k, n]) => `${k}${n}`).join('・')}、座標照合済みスポット${spots.filter((s) => s.lat !== undefined).length}、天皇と人物の対応${emperors.filter((e) => e.pid).length}、試験データ人物の対応${Object.keys(pilot).length}`,

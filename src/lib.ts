@@ -11,9 +11,11 @@ export interface LibEvent {
 }
 export interface LibSpot {
   id: string; pref: string; city: string; t: string; kind: string; era: string; meaning: string;
-  conf: [string, string][]; wiki: string; place?: string;
+  conf: [string, string][]; wiki: string; place?: string; castle?: string;
   lat?: number; lng?: number; coord?: { src: string; url: string; checked: string; memo: string };
 }
+/** 日本100名城®（1〜100）・続日本100名城®（101〜200） */
+export interface LibCastle { id: string; n: number; t: string; pref: string; same: string[]; related: string[] }
 export interface LibPerson { n: string; al: string[]; s: string; g: string; w: string; x: string; add?: boolean }
 export interface LibTheme { id: string; t: string; lv: string; q: string; p: string[]; e: string[]; s: string[]; steps: string[]; o: string; c: string }
 export interface LibEmperor { d: string; n: string; y: string; life: string; k: string; ep: string; wiki: string; sec: number; pid: string; same?: string }
@@ -37,6 +39,7 @@ export interface Library {
   emperors: LibEmperor[];
   /** 人物リストのID → 試験運用データの人物ID */
   pilot: Record<string, string>;
+  castles: LibCastle[];
   // 以下は読み込み後に作る索引
   eventById: Map<string, LibEvent>;
   spotById: Map<string, LibSpot>;
@@ -48,6 +51,9 @@ export interface Library {
   emperorByPerson: Map<string, LibEmperor[]>;
   pilotReverse: Map<string, string>;
   themeById: Map<string, LibTheme>;
+  castleById: Map<string, LibCastle>;
+  /** スポット・施設のID → 同じ対象の名城ID */
+  castleOf: Map<string, string>;
 }
 
 let lib: Library | null = null;
@@ -93,6 +99,8 @@ export function loadLibrary(): Promise<Library> {
         raw.emperorByPerson = group(raw.emperors.filter((e) => e.pid), (e) => e.pid);
         raw.pilotReverse = new Map(Object.entries(raw.pilot).map(([k, v]) => [v, k]));
         raw.themeById = new Map(raw.themes.map((t) => [t.id, t]));
+        raw.castleById = new Map(raw.castles.map((c) => [c.id, c]));
+        raw.castleOf = new Map(raw.castles.flatMap((c) => c.same.map((id) => [id, c.id] as [string, string])));
         lib = raw;
         return raw;
       })
@@ -128,3 +136,9 @@ export function wikiUrl(title: string): string {
 export function personName(l: Library, id: string): string {
   return l.people[id]?.n ?? id;
 }
+
+export const castleSeries = (c: LibCastle) => (c.n <= 100 ? '日本100名城®' : '続日本100名城®');
+export const CASTLE_LIST_URL = {
+  main: 'https://jokaku.jp/business/great-castles/',
+  sequel: 'https://jokaku.jp/business/great-castles-sequel/',
+};

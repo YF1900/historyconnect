@@ -18,7 +18,25 @@ import {
   type LibEvent,
   type LibSpot,
   type Library,
+  type LibCastle,
+  castleSeries,
+  CASTLE_LIST_URL,
 } from './lib';
+import {
+  MEMO_MAX,
+  clearStamps,
+  exportStamps,
+  importStamps,
+  loadStamps,
+  processPhoto,
+  removeOfficial,
+  removePersonal,
+  setOfficial,
+  setOfficialDate,
+  setPersonal,
+  stampsLoaded,
+  today,
+} from './stamps';
 
 /* ---------------- データの索引 ---------------- */
 
@@ -374,6 +392,7 @@ function renderStart(): void {
         option('#/deep', '好きな人物・時代を深掘りする', '年表・人物・歴代天皇から、ゆかりの場所をたどります', '🔎'),
         option('#/trip', '旅先で歴史に触れる', '行き先の都道府県を選んで、訪ねられる場所を探します', '🧳'),
         option('#/themes', '問いから探究する', '42の探究テーマから、人物・出来事・場所を往復して調べます', '💡'),
+        option('#/stamps', 'スタンプ帳', '100名城・続100名城や訪れた場所にスタンプを押して記録します', '🏯'),
       ),
       h('p', { class: 'start-foot' }, h('a', { href: '#/about' }, 'このアプリについて・プライバシー・出典')),
     ),
@@ -595,6 +614,10 @@ function renderTrip(): void {
       ? '地図には、公的資料で位置を照合できた場所だけを表示しています。'
       : 'この地域の場所は、地図上の位置を公的資料で照合中のため、まだ地図に表示していません（推定の位置は表示しません）。'),
     h('div', { class: 'cards' }, prefSpots.map((s) => spotCard(s, (l.eventsBySpot.get(s.id)?.length ?? 0) ? `関連する出来事${l.eventsBySpot.get(s.id)!.length}件` : undefined))),
+    (() => {
+      const cs = l.castles.filter((c) => c.pref.split('・').includes(state.prefecture));
+      return cs.length ? [h('h2', {}, `日本100名城®・続日本100名城®（${cs.length}城）`), h('div', { class: 'cards' }, cs.map((c) => castleCard(l, c)))] : null;
+    })(),
   );
   if (!placesHere.length) {
     drawMarkers(new Set(), true, prefSpots);
@@ -702,6 +725,11 @@ function renderPlace(id: string): void {
             ),
           )
         : null,
+
+      lib?.castleOf.get(p.id)
+        ? h('p', {}, h('a', { href: `#/castle/${lib.castleOf.get(p.id)}`, class: 'btn btn-ghost' }, `${castleSeries(lib.castleById.get(lib.castleOf.get(p.id)!)!)} 第${lib.castleById.get(lib.castleOf.get(p.id)!)!.n}番のページ`))
+        : null,
+      lib ? stampPanel(stampKey(lib, p.id), lib.castleOf.has(p.id)) : null,
 
       spot
         ? h(
@@ -1035,6 +1063,7 @@ function renderSpot(id: string): void {
           { class: 'warn' },
           `地図上の位置は、公的資料による照合がまだ済んでいないため表示していません（推定の位置は表示しません）。所在地の概略：${s.pref} ${s.city}`,
         ),
+    s.castle ? h('p', {}, h('a', { href: `#/castle/${s.castle}`, class: 'btn btn-ghost' }, `${castleSeries(l.castleById.get(s.castle)!)} 第${l.castleById.get(s.castle)!.n}番のページ`)) : null,
     h('h2', {}, '歴史的な意味・見方'),
     h('p', {}, s.meaning),
     h('p', { class: 'muted' }, '当時の遺構・復元建物・後世の記念施設・伝承地を区別して見てください。'),
@@ -1064,6 +1093,7 @@ function renderSpot(id: string): void {
     s.conf.length ? [h('h2', {}, '確認補助資料'), refLinks(l, s.conf)] : null,
     wikiLink(s.wiki),
     h('p', { class: 'warn' }, '開館日・料金・予約・立入可否・災害復旧状況は収録していません。訪れる前に運営主体の最新情報を確認してください。'),
+    stampPanel(stampKey(l, s.id), !!s.castle),
     dataNotice(),
   );
   if (spotHasCoord(s)) {
@@ -1204,6 +1234,246 @@ function renderTheme(id: string): void {
   );
 }
 
+/* ---------------- スタンプ帳 ---------------- */
+
+/** 表示中の写真のURL（画面を切り替えるときに解放する） */
+const photoUrls: string[] = [];
+function photoUrl(b: Blob): string {
+  const u = URL.createObjectURL(b);
+  photoUrls.push(u);
+  return u;
+}
+
+/** スタンプの記録先：同じ対象の名城があれば名城の番号にまとめる */
+function stampKey(l: Library | null, id: string): string {
+  return l?.castleOf.get(id) ?? id;
+}
+
+/** 2回押すと実行するボタン（誤操作の防止。ブラウザの確認ダイアログは使わない） */
+function confirmBtn(label: string, onConfirm: () => void): HTMLButtonElement {
+  let armed = false;
+  const b = h('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, label);
+  b.addEventListener('click', () => {
+    if (!armed) {
+      armed = true;
+      b.textContent = 'もう一度押すと削除';
+      setTimeout(() => {
+        armed = false;
+        b.textContent = label;
+      }, 4000);
+      return;
+    }
+    onConfirm();
+  });
+  return b;
+}
+
+function stampPanel(key: string, allowOfficial: boolean): HTMLElement {
+  const box = h('section', { class: 'stamp-panel', 'aria-live': 'polite' });
+  const stamps = stampsLoaded();
+  if (!stamps) {
+    loadStamps().then(() => route()).catch(() => {});
+    add(box, h('p', { class: 'muted' }, 'スタンプ帳を読み込んでいます…'));
+    return box;
+  }
+  const rec = stamps.get(key);
+  const msg = h('p', { class: 'status', role: 'status' });
+  const fail = (e: unknown) => (msg.textContent = (e as Error).message);
+  add(box, h('h2', {}, 'スタンプ'));
+
+  // 個人スタンプ
+  const p = rec?.personal;
+  const visited = h('input', { type: 'date', class: 'inp', 'aria-label': '訪問日（任意）', max: today(), value: p?.visited ?? '' });
+  const memo = h('input', { type: 'text', class: 'inp', 'aria-label': 'メモ（任意）', maxlength: String(MEMO_MAX), placeholder: 'メモ（任意・200字まで）', value: p?.memo ?? '' });
+  add(
+    box,
+    h(
+      'div',
+      { class: `stamp-card${p ? ' stamp-on' : ''}` },
+      h('div', { class: 'stamp-head' }, h('span', { class: 'stamp-mark', 'aria-hidden': 'true' }, p ? '訪' : '・'), h('strong', {}, '個人スタンプ'), p ? h('span', { class: 'muted' }, `押した日 ${p.at}`) : null),
+      h('p', { class: 'muted' }, 'あなたの訪問記録です。いつでも押せます。'),
+      h('label', { class: 'fld' }, '訪問日（任意）', visited),
+      h('label', { class: 'fld' }, 'メモ（任意）', memo),
+      h(
+        'div',
+        { class: 'row' },
+        h('button', { type: 'button', class: 'btn', onclick: () => setPersonal(key, visited.value, memo.value).then(route, fail) }, p ? '記録を更新' : '個人スタンプを押す'),
+        p ? confirmBtn('取り消す', () => removePersonal(key).then(route, fail)) : null,
+      ),
+    ),
+  );
+
+  // 公式スタンプの写真記録（名城のみ）
+  if (allowOfficial) {
+    const o = rec?.official;
+    const fileInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'visually-hidden', id: `photo-${key}` });
+    const odate = h('input', { type: 'date', class: 'inp', 'aria-label': '公式スタンプを押した日（任意）', max: today(), value: o?.date ?? '' });
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      msg.textContent = '写真を処理しています（位置情報などを取り除いています）…';
+      try {
+        await setOfficial(key, await processPhoto(f), odate.value);
+        route();
+      } catch (e) {
+        fail(e);
+      }
+    });
+    add(
+      box,
+      h(
+        'div',
+        { class: `stamp-card${o ? ' stamp-on' : ''}` },
+        h('div', { class: 'stamp-head' }, h('span', { class: 'stamp-mark stamp-mark-off', 'aria-hidden': 'true' }, o ? '城' : '・'), h('strong', {}, '公式スタンプの写真記録'), o ? h('span', { class: 'muted' }, `記録した日 ${o.at}`) : null),
+        h('p', { class: 'muted' }, '日本城郭協会のスタンプ帳に押した実物のスタンプを撮影して残せます。写真はこの端末の中だけに保存し、撮影場所などの位置情報は取り除きます。'),
+        o ? h('img', { src: photoUrl(o.photo), alt: '公式スタンプの写真（ご自身の記録）', class: 'stamp-photo' }) : null,
+        h('label', { class: 'fld' }, 'スタンプを押した日（任意）', odate),
+        h(
+          'div',
+          { class: 'row' },
+          fileInput,
+          h('label', { for: `photo-${key}`, class: 'btn', role: 'button', tabindex: '0' }, o ? '撮り直す' : '公式スタンプを撮影'),
+          o ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => setOfficialDate(key, odate.value).then(route, fail) }, '日付を保存') : null,
+          o ? confirmBtn('写真を削除', () => removeOfficial(key).then(route, fail)) : null,
+        ),
+        h('p', { class: 'muted small' }, 'スタンプの図柄は各城・日本城郭協会などの著作物です。写真はご自身の記録用とし、SNSなどへの公開はお控えください。'),
+      ),
+    );
+  }
+  add(box, msg);
+  return box;
+}
+
+function castleCard(_l: Library, c: LibCastle): HTMLElement {
+  const r = stampsLoaded()?.get(c.id);
+  return h(
+    'a',
+    { href: `#/castle/${c.id}`, class: 'card' },
+    h('span', { class: 'kind kind-castle' }, `${castleSeries(c)} ${c.n}`),
+    h('strong', { class: 'card-title' }, c.t),
+    h('span', { class: 'card-sub' }, [c.pref, r?.personal ? '個人スタンプ済み' : '', r?.official ? '公式スタンプ写真あり' : ''].filter(Boolean).join('・')),
+  );
+}
+
+function renderCastle(id: string): void {
+  const main = detailShell('名城');
+  const l = needLibrary(main);
+  if (!l) return;
+  const c = l.castleById.get(id);
+  if (!c) return void go('#/stamps');
+  const links = (ids: string[], extra: string) =>
+    ids.map((x) => (l.spotById.has(x) ? spotCard(l.spotById.get(x)!, extra) : placeById.has(x) ? placeCard(placeById.get(x)!, extra) : null));
+  add(
+    main,
+    backBtn(),
+    h('span', { class: 'kind kind-castle' }, castleSeries(c)),
+    h('h1', {}, c.t),
+    h('p', { class: 'kana' }, `${castleSeries(c)} 第${c.n}番・${c.pref}`),
+    c.same.length || c.related.length
+      ? [h('h2', {}, '歴史を調べる'), h('div', { class: 'cards' }, links(c.same, 'この城の情報'), links(c.related, '城の一部・関連する場所'))]
+      : h('p', { class: 'note' }, 'この城の歴史・位置の情報はまだ収録していません（推測では補っていません）。'),
+    stampPanel(c.id, true),
+    h(
+      'p',
+      { class: 'muted' },
+      '番号・名称・都道府県は日本城郭協会の公式一覧によります：',
+      extLink(c.n <= 100 ? CASTLE_LIST_URL.main : CASTLE_LIST_URL.sequel, `${castleSeries(c)}一覧`),
+      '（確認日 2026年11月1日）。日本100名城®・続日本100名城®は公益財団法人日本城郭協会の登録商標です。このアプリは同協会とは関係のない個人プロジェクトです。',
+    ),
+  );
+}
+
+function renderStamps(): void {
+  const main = detailShell('スタンプ帳');
+  const l = needLibrary(main);
+  if (!l) return;
+  const stamps = stampsLoaded();
+  if (!stamps) {
+    add(main, h('p', { class: 'status' }, 'スタンプ帳を読み込んでいます…'));
+    loadStamps().then(() => location.hash.startsWith('#/stamps') && renderStamps());
+    return;
+  }
+  const msg = h('p', { class: 'status', role: 'status' });
+  const series = (from: number, to: number, title: string) => {
+    const list = l.castles.filter((c) => c.n >= from && c.n <= to);
+    const pers = list.filter((c) => stamps.get(c.id)?.personal).length;
+    const off = list.filter((c) => stamps.get(c.id)?.official).length;
+    return [
+      h('h2', {}, title),
+      h('p', { class: 'progress' }, h('span', {}, `個人スタンプ ${pers}/100`), h('span', {}, `公式スタンプ写真 ${off}/100`)),
+      h(
+        'div',
+        { class: 'stamp-grid' },
+        list.map((c) => {
+          const r = stamps.get(c.id);
+          return h(
+            'a',
+            { href: `#/castle/${c.id}`, class: `cell${r?.personal ? ' cell-p' : ''}${r?.official ? ' cell-o' : ''}`, 'aria-label': `${c.n} ${c.t}${r?.personal ? '、個人スタンプ済み' : ''}${r?.official ? '、公式スタンプ写真あり' : ''}` },
+            h('span', { class: 'cell-n' }, String(c.n)),
+            h('span', { class: 'cell-t' }, c.t),
+            h('span', { class: 'cell-m', 'aria-hidden': 'true' }, `${r?.personal ? '訪' : ''}${r?.official ? '城' : ''}`),
+          );
+        }),
+      ),
+    ];
+  };
+  const others = [...stamps.values()].filter((r) => !r.key.startsWith('JC-') && r.personal);
+  const importInput = h('input', { type: 'file', accept: 'application/json,.json', class: 'visually-hidden', id: 'stamp-import' });
+  importInput.addEventListener('change', async () => {
+    const f = importInput.files?.[0];
+    if (!f) return;
+    msg.textContent = '読み込んでいます…';
+    try {
+      const r = await importStamps(f);
+      msg.textContent = `読み込みました：個人スタンプ${r.personal}件、公式スタンプ写真${r.official}件${r.skipped ? `（読み込めなかった項目${r.skipped}件）` : ''}。`;
+      setTimeout(() => location.hash.startsWith('#/stamps') && renderStamps(), 1500);
+    } catch (e) {
+      msg.textContent = (e as Error).message;
+    }
+  });
+  add(
+    main,
+    h('h1', {}, 'スタンプ帳'),
+    h('p', { class: 'note' }, 'スタンプと写真は、この端末のブラウザの中にだけ保存されます。外部には送信しません。ブラウザのデータを消すと記録も消えるため、ときどき書き出しておくと安心です。'),
+    h('p', { class: 'legend-inline' }, h('span', { class: 'cell-m' }, '訪'), ' 個人スタンプ　', h('span', { class: 'cell-m' }, '城'), ' 公式スタンプの写真記録'),
+    series(1, 100, '日本100名城®'),
+    series(101, 200, '続日本100名城®'),
+    h('h2', {}, `そのほかの場所（${others.length}）`),
+    others.length
+      ? h('div', { class: 'cards' }, others.map((r) => (l.spotById.has(r.key) ? spotCard(l.spotById.get(r.key)!, `訪問 ${r.personal!.visited ?? r.personal!.at}`) : placeById.has(r.key) ? placeCard(placeById.get(r.key)!, `訪問 ${r.personal!.visited ?? r.personal!.at}`) : null)))
+      : h('p', { class: 'muted' }, '歴史スポットや施設の画面から、個人スタンプを押せます。'),
+    h('h2', {}, 'バックアップ'),
+    h('p', { class: 'muted' }, '機種変更などのときに、記録をファイルに書き出して別の端末で読み込めます。ファイルには公式スタンプの写真も含まれます。個人の記録用として保管し、公開・共有しないでください。'),
+    h(
+      'div',
+      { class: 'row' },
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn',
+          onclick: async () => {
+            try {
+              const blob = await exportStamps();
+              const a = h('a', { href: URL.createObjectURL(blob), download: `historyconnect-stamps-${today()}.json` });
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+              msg.textContent = '書き出しました。';
+            } catch (e) {
+              msg.textContent = (e as Error).message;
+            }
+          },
+        },
+        'ファイルに書き出す',
+      ),
+      importInput,
+      h('label', { for: 'stamp-import', class: 'btn btn-ghost', role: 'button', tabindex: '0' }, 'ファイルから読み込む'),
+    ),
+    msg,
+    h('p', { class: 'muted' }, '日本100名城®・続日本100名城®は公益財団法人日本城郭協会の登録商標です。このアプリは同協会とは関係のない個人プロジェクトで、公式スタンプの認定は行いません。'),
+  );
+}
+
 /* ---------------- 画面：検索 ---------------- */
 
 function searchForm(autofocus = false): HTMLFormElement {
@@ -1291,6 +1561,8 @@ function updateSearchResults(): void {
     add(searchResults, h('h2', {}, `探究テーマ（${lr.themes.length}）`), h('div', { class: 'cards' }, lr.themes.slice(0, LIMIT).map((hit) => h('a', { href: `#/theme/${hit.item.id}`, class: 'card' }, h('span', { class: 'kind kind-theme' }, `テーマ・${hit.item.lv}`), h('strong', { class: 'card-title' }, hit.item.t), h('span', { class: 'card-sub' }, hit.item.q)))));
   if (lr?.events.length)
     add(searchResults, h('h2', {}, `全国の出来事（${lr.events.length}）`), h('div', { class: 'cards' }, lr.events.slice(0, LIMIT).map((hit) => eventCard(hit.item, hit.snippet))), more(lr.events.length));
+  const castleHits = l ? l.castles.filter((c) => q.split(/[\s　]+/).filter(Boolean).every((w) => `${c.t}${c.pref}${castleSeries(c)}`.includes(w))) : [];
+  if (castleHits.length) add(searchResults, h('h2', {}, `名城（${castleHits.length}）`), h('div', { class: 'cards' }, castleHits.slice(0, LIMIT).map((c) => castleCard(l!, c))));
   if (lr?.spots.length)
     add(searchResults, h('h2', {}, `歴史スポット（${lr.spots.length}）`), h('div', { class: 'cards' }, lr.spots.slice(0, LIMIT).map((hit) => spotCard(hit.item, hit.snippet))), more(lr.spots.length));
   if (r.people.length)
@@ -1372,6 +1644,7 @@ function renderSaved(): void {
       { class: 'detail' },
       h('h1', {}, '行きたい場所'),
       h('p', { class: 'note' }, 'この一覧は、お使いの端末のブラウザ内にだけ保存されています。'),
+      h('p', {}, h('a', { href: '#/stamps', class: 'btn btn-ghost' }, '訪れた場所はスタンプ帳へ')),
       list.length || spotIds.length
         ? h('div', { class: 'cards' }, list.map((p) => placeCard(p)), spots.map((s) => spotCard(s)))
         : h('p', {}, 'まだ登録がありません。施設・歴史スポットの詳細画面から追加できます。'),
@@ -1415,17 +1688,22 @@ function renderAbout(): void {
       h('h3', {}, '1. 現在地（位置情報）'),
       h('p', {}, '「現在地を使う」を押し、ブラウザで許可したときだけ取得します。取得した位置は、この端末の中で施設までの距離を計算するためだけに使い、どこにも送信・保存しません。ページを閉じると破棄されます。'),
       h('h3', {}, '2. 端末内に保存する情報'),
-      h('p', {}, '「行きたい」に登録した施設の一覧だけを、お使いのブラウザの保存領域（localStorage）に保存します。この情報は外部に送信されません。Cookie、アクセス解析、広告の仕組みは使っていません。'),
+      h('p', {}, '「行きたい」に登録した施設・スポットの一覧を、お使いのブラウザの保存領域（localStorage）に保存します。'),
+      h('p', {}, 'スタンプ帳の記録（個人スタンプを押した日・訪問日・メモ、公式スタンプの写真と押した日）を、お使いのブラウザの保存領域（IndexedDB）に保存します。訪問の記録は行動の履歴にあたるため、運営者は受け取らず、外部にも送信しません。'),
+      h('p', {}, '公式スタンプの写真は、撮影または選んだ画像をこの端末の中で縮小して描き直してから保存します。この処理で、撮影場所の位置情報などのメタデータ（EXIF）は取り除かれます。カメラは写真を撮るときにだけ、端末の通常の撮影・写真選択の画面で使います。'),
+      h('p', {}, 'スタンプ帳は「ファイルに書き出す」でバックアップできます。書き出したファイルには写真と訪問記録が含まれるため、ご自身で管理し、公開・共有しないでください。'),
+      h('p', {}, 'Cookie、アクセス解析、広告の仕組みは使っていません。'),
       h(
         'button',
         {
           type: 'button',
           class: 'btn btn-ghost',
-          onclick: () => {
+          onclick: async () => {
             clearAllLocalData();
+            await clearStamps();
             state.saved = new Set();
             state.here = null;
-            alertInline('この端末に保存されたデータを消去しました。');
+            alertInline('この端末に保存されたデータ（行きたい場所・スタンプ帳・写真）を消去しました。');
           },
         },
         'この端末の保存データを消去する',
@@ -1470,8 +1748,10 @@ function renderAbout(): void {
         'で受け付けています。Issuesは公開の場所のため、氏名・住所・連絡先などの個人情報は書き込まないでください。',
       ),
       h('p', {}, 'このポリシーを変更するときは、このページで改定日とともにお知らせします。'),
-      h('p', { class: 'muted' }, '制定日：2026年11月1日／改定日：2026年11月1日（運営者・お問い合わせ先・全国データの追加を反映）'),
+      h('p', { class: 'muted' }, '制定日：2026年11月1日／改定日：2026年11月1日（運営者・お問い合わせ先・全国データ・スタンプ帳の追加を反映）'),
 
+      h('h2', {}, '商標について'),
+      h('p', {}, '日本100名城®・続日本100名城®は公益財団法人日本城郭協会の登録商標です。このアプリは同協会とは関係のない個人プロジェクトで、名城の番号・名称は同協会の公式一覧によります。'),
       h('h2', {}, '地図・ソフトウェア'),
       h('p', {}, '地図：', extLink('https://maps.gsi.go.jp/development/ichiran.html', '地理院タイル（国土地理院）'), '／地図表示：', extLink('https://leafletjs.com', 'Leaflet'), '（BSD-2-Clauseライセンス）'),
 
@@ -1504,6 +1784,7 @@ function go(hash: string): void {
 }
 
 function route(): void {
+  photoUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
   const hash = location.hash || '#/';
   const [, view, arg] = hash.split('/');
   switch (view) {
@@ -1533,6 +1814,10 @@ function route(): void {
       return renderTheme(decodeURIComponent(arg ?? ''));
     case 'saved':
       return renderSaved();
+    case 'castle':
+      return renderCastle(decodeURIComponent(arg ?? ''));
+    case 'stamps':
+      return renderStamps();
     case 'about':
       return renderAbout();
     default:

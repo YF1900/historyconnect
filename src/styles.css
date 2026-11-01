@@ -189,3 +189,27 @@ button { font: inherit; }
 .pager .btn { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .emp { border-left: 3px solid #ccc; padding-left: 10px; margin: 8px 0; }
 .lib-sec { margin-top: 24px; border-top: 1px solid #ddd; padding-top: 8px; }
+
+/* ---- スタンプ帳 ---- */
+.kind-castle { background: var(--castle); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.stamp-panel { margin: 16px 0; }
+.stamp-card { border: 1px dashed #b9a98a; border-radius: 12px; padding: 12px; margin: 10px 0; background: #fffdf8; }
+.stamp-card.stamp-on { border-style: solid; border-color: #8b2e1f; }
+.stamp-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stamp-mark { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; border: 2px solid #8b2e1f; color: #8b2e1f; font-weight: 700; transform: rotate(-8deg); }
+.stamp-mark-off { border-color: #2f4f8a; color: #2f4f8a; }
+.stamp-photo { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; margin: 8px 0; }
+.fld { display: block; font-size: 0.85rem; margin: 6px 0; }
+.inp { display: block; width: 100%; box-sizing: border-box; padding: 8px; font-size: 1rem; border: 1px solid #ccc; border-radius: 8px; margin-top: 2px; }
+.btn-sm { padding: 6px 10px; font-size: 0.85rem; }
+.small { font-size: 0.75rem; }
+.progress { display: flex; gap: 12px; flex-wrap: wrap; font-weight: 700; }
+.stamp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.cell { position: relative; display: flex; flex-direction: column; min-height: 64px; padding: 6px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: inherit; text-decoration: none; font-size: 0.75rem; }
+.cell-n { color: #888; }
+.cell-t { font-weight: 700; line-height: 1.25; }
+.cell-m { color: #8b2e1f; font-weight: 700; }
+.cell-p { border-color: #8b2e1f; background: #fff4ef; }
+.cell-o { box-shadow: inset 0 0 0 2px #2f4f8a; }
+.legend-inline { font-size: 0.85rem; }
