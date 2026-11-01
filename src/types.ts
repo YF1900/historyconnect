@@ -48,12 +48,26 @@ export interface Place {
   claims: Claim[];
 }
 
+export type PersonFactLabel = '生年' | '出身' | '没年' | '最期' | '家族' | 'エピソード';
+
+export interface PersonFact {
+  label: PersonFactLabel;
+  text: string;
+  type: ClaimType;
+  sourceIds: string[];
+}
+
 export interface Person {
   id: string;
   name: string;
   kana: string;
   /** 出典に書かれている範囲の説明だけを記載する */
   note?: { text: string; sourceId: string };
+  /** 生没年の表示用（例："1515〜1571"、不確かな年には「?」を付ける） */
+  lifespan?: string;
+  /** 戦いで亡くなった、または戦いが直接の原因で亡くなった場合の戦いの名前 */
+  deathBattle?: { name: string; diedInBattle: boolean; sourceId: string };
+  facts?: PersonFact[];
 }
 
 export interface HistEvent {

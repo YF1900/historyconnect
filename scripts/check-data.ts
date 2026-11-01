@@ -14,7 +14,14 @@ const idOk = (id: string) => /^[a-z0-9-]{1,64}$/.test(id);
 
 for (const s of SOURCES) if (!/^https:\/\//.test(s.url)) errors.push(`出典 ${s.id} のURLが https ではありません`);
 for (const e of EVENTS) for (const s of e.sourceIds) if (!src.has(s)) errors.push(`出来事 ${e.id}: 出典 ${s} が未定義`);
-for (const p of PEOPLE) if (p.note && !src.has(p.note.sourceId)) errors.push(`人物 ${p.id}: 出典 ${p.note.sourceId} が未定義`);
+for (const p of PEOPLE) {
+  if (p.note && !src.has(p.note.sourceId)) errors.push(`人物 ${p.id}: 出典 ${p.note.sourceId} が未定義`);
+  if (p.deathBattle && !src.has(p.deathBattle.sourceId)) errors.push(`人物 ${p.id}: 最期の出典が未定義`);
+  for (const f of p.facts ?? []) {
+    if (!f.sourceIds.length) errors.push(`人物 ${p.id}: 「${f.label}」に出典がありません`);
+    for (const s of f.sourceIds) if (!src.has(s)) errors.push(`人物 ${p.id}: 出典 ${s} が未定義`);
+  }
+}
 
 const seen = new Set<string>();
 for (const p of PLACES) {

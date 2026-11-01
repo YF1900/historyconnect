@@ -2,10 +2,11 @@ import 'leaflet/dist/leaflet.css';
 import './styles.css';
 import L from 'leaflet';
 import { EVENTS, PEOPLE, PLACES, SOURCES } from './data';
-import type { Claim, ClaimType, Place } from './types';
+import type { Claim, ClaimType, Person, Place } from './types';
 import { add, clear, extLink, h } from './dom';
 import { distanceKm, formatKm, getCurrentPosition } from './geo';
 import { clearAllLocalData, loadSaved, storeSaved } from './storage';
+import { EXAMPLES, search } from './search';
 
 /* ---------------- データの索引 ---------------- */
 
@@ -65,6 +66,7 @@ const state = {
   hereStatus: '' as string,
   focus: null as Focus,
   prefecture: '' as string,
+  query: '' as string,
 };
 
 /* ---------------- 地図 ---------------- */
@@ -158,8 +160,9 @@ function header(title: string, showSwitch = true): HTMLElement {
     h(
       'nav',
       { class: 'topbar-nav', 'aria-label': 'メニュー' },
-      showSwitch ? h('a', { href: '#/', class: 'chip-btn' }, '目的を変える') : null,
-      h('a', { href: '#/saved', class: 'chip-btn' }, `行きたい ${state.saved.size}`),
+      h('a', { href: '#/search', class: 'chip-btn', 'aria-label': '検索' }, '検索'),
+      showSwitch ? h('a', { href: '#/', class: 'chip-btn', 'aria-label': '目的を変える' }, '目的') : null,
+      h('a', { href: '#/saved', class: 'chip-btn', 'aria-label': `行きたい場所 ${state.saved.size}件` }, `★ ${state.saved.size}`),
     ),
   );
 }
@@ -234,6 +237,7 @@ function renderStart(): void {
       h('h1', {}, 'ヒストリーコネクト'),
       h('p', { class: 'lead' }, '好きな人物や時代、行きたい場所から、日本の歴史をたどってみましょう。'),
       h('p', { class: 'theme' }, '試験版テーマ：1590年 豊臣秀吉の小田原攻めと関東の城'),
+      searchForm(),
       h(
         'div',
         { class: 'purposes' },
@@ -529,12 +533,9 @@ function renderPlace(id: string): void {
                   {
                     type: 'button',
                     class: 'chip',
-                    onclick: () => {
-                      state.focus = { kind: 'person', id: person.id };
-                      go('#/deep');
-                    },
+                    onclick: () => go(`#/person/${person.id}`),
                   },
-                  person.name,
+                  person.lifespan ? `${person.name}（${person.lifespan.split('（')[0]}）` : person.name,
                 ),
               ),
             ),
@@ -570,6 +571,206 @@ function renderPlace(id: string): void {
     ),
   );
   window.scrollTo(0, 0);
+}
+
+
+/* ---------------- 画面：人物 ---------------- */
+
+const FACT_ORDER = ['出身', '生年', '没年', '最期', '家族', 'エピソード'] as const;
+
+function renderPerson(id: string): void {
+  const person = personById.get(id);
+  if (!person) {
+    go('#/');
+    return;
+  }
+  clear(app);
+  const related = placesWithPerson(person.id);
+  const facts = [...(person.facts ?? [])].sort((a, b) => FACT_ORDER.indexOf(a.label) - FACT_ORDER.indexOf(b.label));
+  const timeline: { c: Claim; p: Place }[] = [];
+  for (const p of places) for (const c of p.claims) if (c.people?.includes(person.id)) timeline.push({ c, p });
+  timeline.sort((a, b) => (a.c.year ?? 9999) - (b.c.year ?? 9999));
+
+  app.append(
+    header('人物'),
+    h(
+      'main',
+      { class: 'detail' },
+      h('button', { type: 'button', class: 'back', onclick: () => history.back() }, '← もどる'),
+      h('span', { class: 'kind kind-person' }, '人物'),
+      h('h1', {}, person.name),
+      h('p', { class: 'kana' }, person.kana),
+      h(
+        'dl',
+        { class: 'profile' },
+        h('dt', {}, '生没年'),
+        h('dd', {}, person.lifespan ?? '信頼できる出典でまだ確認できていません'),
+        person.deathBattle
+          ? [
+              h('dt', {}, person.deathBattle.diedInBattle ? '亡くなった戦い' : '最期に関わった戦い'),
+              h('dd', {}, person.deathBattle.name, person.deathBattle.diedInBattle ? '（戦死）' : '（戦死ではない）'),
+            ]
+          : null,
+      ),
+      person.note ? h('p', {}, person.note.text, ' ', sourceLinks([person.note.sourceId])) : null,
+
+      facts.length
+        ? h(
+            'section',
+            {},
+            h('h2', {}, '人物像'),
+            legend(),
+            h(
+              'ul',
+              { class: 'claims' },
+              facts.map((f) =>
+                h(
+                  'li',
+                  { class: `claim claim-${f.type}` },
+                  h('span', { class: `badge badge-${f.type}`, title: CLAIM_HELP[f.type] }, CLAIM_LABEL[f.type]),
+                  h('span', { class: 'fact-label' }, f.label),
+                  h('p', {}, f.text),
+                  sourceLinks(f.sourceIds),
+                ),
+              ),
+            ),
+          )
+        : h('p', { class: 'note' }, '出身・生没年などの情報は、信頼できる出典でまだ確認できていないため掲載していません。'),
+
+      related.length
+        ? h('section', {}, h('h2', {}, `ゆかりの場所（${related.length}件）`), h('div', { class: 'cards' }, related.map((p) => placeCard(p))))
+        : null,
+      timeline.length
+        ? h('section', {}, h('h2', {}, '登場する出来事を年代順に'), h('ol', { class: 'claims timeline' }, timeline.map((t) => claimItem(t.c, t.p))))
+        : null,
+    ),
+  );
+  window.scrollTo(0, 0);
+}
+
+/* ---------------- 画面：検索 ---------------- */
+
+function searchForm(autofocus = false): HTMLFormElement {
+  const input = h('input', {
+    type: 'search',
+    name: 'q',
+    class: 'search-input',
+    placeholder: '人物・城・出来事・地名・年など',
+    'aria-label': '検索する言葉',
+    maxlength: '100',
+    autocomplete: 'off',
+    enterkeyhint: 'search',
+    value: state.query,
+  });
+  if (autofocus) setTimeout(() => input.focus(), 0);
+  const form = h(
+    'form',
+    {
+      class: 'search-form',
+      role: 'search',
+      onsubmit: (e: Event) => {
+        e.preventDefault();
+        state.query = input.value;
+        input.blur();
+        if (location.hash.startsWith('#/search')) updateSearchResults();
+        else go('#/search');
+      },
+    },
+    input,
+    h('button', { type: 'submit', class: 'btn' }, '検索'),
+  );
+  input.addEventListener('input', () => {
+    state.query = input.value;
+    if (location.hash.startsWith('#/search')) updateSearchResults();
+  });
+  return form;
+}
+
+const searchResults = h('div', { 'aria-live': 'polite' });
+
+function renderSearch(): void {
+  clear(app);
+  app.append(
+    header('検索'),
+    h(
+      'main',
+      { class: 'detail' },
+      h('h1', {}, '検索'),
+      searchForm(true),
+      h('p', { class: 'note' }, '入力した言葉はこの端末の中だけで検索に使い、どこにも送信・保存しません。空白で区切ると、すべての言葉を含むものを探します。'),
+      searchResults,
+    ),
+  );
+  updateSearchResults();
+}
+
+function updateSearchResults(): void {
+  clear(searchResults);
+  const q = state.query.trim();
+  if (!q) {
+    add(
+      searchResults,
+      h('h2', {}, '例えば'),
+      h(
+        'div',
+        { class: 'chips' },
+        EXAMPLES.map((ex) =>
+          h('button', { type: 'button', class: 'chip', onclick: () => { state.query = ex; renderSearch(); } }, ex),
+        ),
+      ),
+    );
+    return;
+  }
+  const r = search(q);
+  const total = r.places.length + r.people.length + r.events.length;
+  add(searchResults, h('p', { class: 'status' }, total ? `「${q}」の検索結果：${total}件` : `「${q}」に一致する情報は見つかりませんでした。`));
+  if (r.people.length)
+    add(
+      searchResults,
+      h('h2', {}, `人物（${r.people.length}）`),
+      h('div', { class: 'cards' }, r.people.map((hit) => personCard(hit.item, hit.snippet))),
+    );
+  if (r.places.length)
+    add(
+      searchResults,
+      h('h2', {}, `城・博物館（${r.places.length}）`),
+      h('div', { class: 'cards' }, r.places.map((hit) => placeCard(hit.item, hit.snippet))),
+    );
+  if (r.events.length)
+    add(
+      searchResults,
+      h('h2', {}, `出来事（${r.events.length}）`),
+      h(
+        'div',
+        { class: 'cards' },
+        r.events.map((hit) =>
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'card card-btn',
+              onclick: () => {
+                state.focus = { kind: 'event', id: hit.item.id };
+                go('#/deep');
+              },
+            },
+            h('span', { class: 'kind kind-event' }, '出来事'),
+            h('strong', { class: 'card-title' }, `${hit.item.name}（${hit.item.year}年）`),
+            h('span', { class: 'card-sub' }, hit.item.summary.slice(0, 60) + '…'),
+          ),
+        ),
+      ),
+    );
+}
+
+function personCard(p: Person, extra?: string): HTMLElement {
+  return h(
+    'a',
+    { href: `#/person/${p.id}`, class: 'card' },
+    h('span', { class: 'kind kind-person' }, '人物'),
+    h('strong', { class: 'card-title' }, p.name),
+    h('span', { class: 'card-sub' }, [p.lifespan, extra].filter(Boolean).join('・') || p.kana),
+  );
 }
 
 /* ---------------- 画面：行きたい場所 ---------------- */
@@ -700,6 +901,10 @@ function route(): void {
       return renderTrip();
     case 'place':
       return renderPlace(decodeURIComponent(arg ?? ''));
+    case 'person':
+      return renderPerson(decodeURIComponent(arg ?? ''));
+    case 'search':
+      return renderSearch();
     case 'saved':
       return renderSaved();
     case 'about':

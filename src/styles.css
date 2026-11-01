@@ -41,6 +41,7 @@ button { font: inherit; }
 .topbar-title { flex: 1; font-size: 0.85rem; opacity: 0.9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-nav { display: flex; gap: 6px; margin-left: auto; }
 @media (max-width: 480px) { .topbar-title { display: none; } }
+@media (max-width: 380px) { .brand { font-size: 0.9rem; } .chip-btn { padding: 2px 8px; } }
 .chip-btn {
   color: #fff; text-decoration: none; font-size: 0.78rem;
   border: 1px solid rgba(255,255,255,0.6); border-radius: 999px; padding: 2px 10px; white-space: nowrap;
@@ -155,3 +156,17 @@ button { font: inherit; }
 .pin-museum { background: var(--museum); }
 .pin-hl { transform: scale(1.15); box-shadow: 0 0 0 3px #f59e0b; }
 .leaflet-container { font: inherit; }
+
+/* ----- 人物・検索 ----- */
+.kind-person { background: #5a4a8a; }
+.kind-event { background: #8a6100; }
+.profile { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0; }
+.profile dt { font-weight: 700; font-size: 0.85rem; color: var(--muted); }
+.profile dd { margin: 0; }
+.fact-label { font-weight: 700; font-size: 0.85rem; margin-left: 8px; }
+.search-form { display: flex; gap: 8px; margin: 16px 0 8px; }
+.search-input {
+  flex: 1; min-width: 0; min-height: 44px; font: inherit; font-size: 16px;
+  padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: #fff;
+}
+.card-btn { text-align: left; font: inherit; cursor: pointer; width: 100%; }
