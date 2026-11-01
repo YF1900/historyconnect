@@ -170,3 +170,22 @@ button { font: inherit; }
   padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: #fff;
 }
 .card-btn { text-align: left; font: inherit; cursor: pointer; width: 100%; }
+
+/* ---- 全国データ ---- */
+.kind-spot { background: #2f6f4f; }
+.kind-theme { background: #8a3b5c; }
+.pin-spot { background: #2f6f4f; }
+.st { display: inline-block; font-size: 0.75rem; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; margin-right: 6px; white-space: nowrap; }
+.st-checked, .st-A { color: #1f6b3a; background: #e8f5ec; }
+.st-unchecked, .st-B { color: #7a5a00; background: #fff6dc; }
+.st-L { color: #1d4f8a; background: #e8f0fb; }
+.st-H { color: #8a2f2f; background: #fbeaea; }
+.st-kind { color: #444; background: #f1f1f1; }
+.map-inline { height: 240px; border-radius: 10px; overflow: hidden; margin: 8px 0; }
+.map-inline #map { height: 100%; }
+.refs { padding-left: 1.2em; }
+.refs li { margin: 4px 0; }
+.pager { justify-content: space-between; margin-top: 16px; }
+.pager .btn { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.emp { border-left: 3px solid #ccc; padding-left: 10px; margin: 8px 0; }
+.lib-sec { margin-top: 24px; border-top: 1px solid #ddd; padding-top: 8px; }

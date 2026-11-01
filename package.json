@@ -6,8 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run check-data && tsc --noEmit && vite build",
+    "build": "npm run build-library && npm run check-data && tsc --noEmit && vite build",
     "preview": "vite preview",
+    "build-library": "node --experimental-strip-types --no-warnings scripts/build-library.ts",
     "check-data": "node --experimental-strip-types --no-warnings scripts/check-data.ts"
   },
   "repository": {

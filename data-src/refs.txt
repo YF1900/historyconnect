@@ -1,0 +1,27 @@
+# 確認補助資料（出来事・スポット資料の R番号、関係資料の W番号）
+# 形式：番号|資料名|URL|用途・確認範囲
+R01|古都飛鳥保存財団「飛鳥時代前後の年表」|https://www.asukabito.or.jp/chronology.html|古代の年代整理・仏教公伝の二説
+R02|奈良文化財研究所「飛鳥資料館について」|https://www.nabunken.go.jp/asuka/about/|飛鳥の宮殿・飛鳥寺造営の背景
+R03|国立公文書館「日本のあゆみ」年表|https://www.archives.go.jp/ayumi/table.html|近現代の主要政策・制度の確認
+R04|国立公文書館アジア歴史資料センター「アジア歴史資料ラーニング」|https://www.jacar.go.jp/learning/|近現代史の追加調査先
+R05|文化庁「文化遺産オンライン」世界遺産|https://online.bunka.go.jp/special_content/world|文化遺産の調査入口
+R06|文化庁「国指定文化財等データベース」|https://kunishitei.bunka.go.jp/|史跡指定・名称・所在地を追加確認するための入口
+R07|帝国書院「鎌倉幕府の成立年」|https://www.teikokushoin.co.jp/junior/faq/detail/941/|幕府成立の段階と1192年のみでは説明できない理由
+R08|神奈川県立の図書館「神奈川県関係史料年表」|https://www.klnet.pref.kanagawa.jp/publications/rekishi-bunken/nenpyou/|1180年・1192年・1333年の鎌倉関連事項
+R09|向日市「長岡京とは」|https://www.city.muko.kyoto.jp/site/rekishi/1071.html|784年遷都・794年までの都・所在地
+R10|魚津市「魚津の歴史と文化」|https://www.city.uozu.toyama.jp/guide/svGuideDtl.aspx?cd=3104&cdkb=ctg&servno=25190&topkb=G|米騒動と旧十二銀行米倉の関連
+R11|魚津市「旧十二銀行魚津支店事務所等（米倉）の見学について」|https://www.city.uozu.toyama.jp/guide/svGuideDtl.aspx?servno=25798&topkb=G|施設の名称・米騒動との関連
+R12|湊川神社「楠木正成公殉節地と御墓所」|https://www.minatogawajinja.or.jp/grounds/highlights/|墓所・戦没地の伝承と後世の顕彰
+R13|世界遺産 北海道・北東北の縄文遺跡群「三内丸山遺跡」|https://jomon-japan.jp/learn/jomon-sites/sannai-maruyama|集落・出土物と縄文の暮らし
+R14|広島市「原爆ドームは爆心地にとても近いのに…」|https://www.city.hiroshima.lg.jp/faq/atomicbomb-peace/1001613/1028187/1002370.html|原爆ドームと爆心地の位置の違い
+R15|文化庁・日本遺産ポータル「出島和蘭商館跡」|https://japan-heritage.bunka.go.jp/ja/culturalproperties/result/5425/|1636年完成・1641年商館移転
+R16|内閣府「首里城公園」|https://www8.cao.go.jp/okinawa/5/52.html|首里城と琉球王国、戦後の復元事業
+R17|首里城公園「琉球王国とは」|https://oki-park.jp/shurijo/about/186/|1429年の統一・1879年の王国廃止
+R18|佐渡市「佐渡島の金山」|https://www.city.sado.niigata.jp/site/mine/|佐渡金銀山の歴史と世界遺産全体の範囲を調べる入口
+R19|奈良県立万葉文化館「仏教伝来」|https://manyo-hyakka.pref.nara.jp/db/detail?cls=db_yougo3&pkey=1|538年説と552年説
+W01|東大寺「奈良時代創建」|https://www.todaiji.or.jp/history/narajidai/|東大寺の造立に関わった人物
+W02|京都府「平等院」|https://www.pref.kyoto.jp/kyotoyamashirokanko/treasure_1.html|平等院の建立・本尊制作
+W03|元離宮二条城「年表」|https://nijo-jocastle.city.kyoto.lg.jp/introduction/highlights/nenpyo/|二条城の築城・大政奉還
+W04|大阪大学「一、適塾の沿革」|https://www.osaka-u.ac.jp/ja/guide/about/tekijuku/outline.html|適塾の塾主・塾生
+W05|中尊寺「金色堂」|https://www.chusonji.or.jp/know/konjikido.html|金色堂の建立
+W06|奈良市「唐招提寺」|https://www.city.nara.lg.jp/site/world-heritage/88527.html|唐招提寺の創建

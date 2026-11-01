@@ -84,5 +84,51 @@ export function search(raw: string) {
   };
 }
 
+/* ---------- 全国データ（読み込み後に索引を作る） ---------- */
+import type { Library, LibEvent, LibSpot, LibTheme } from './lib';
+
+interface LibIndex {
+  people: Entry<string>[];
+  events: Entry<LibEvent>[];
+  spots: Entry<LibSpot>[];
+  themes: Entry<LibTheme>[];
+}
+let libIndex: LibIndex | null = null;
+
+function buildLibIndex(l: Library): LibIndex {
+  return {
+    people: Object.entries(l.people).map(([id, p]) => ({
+      item: id,
+      title: p.n,
+      key: normalize([p.n, ...p.al].join(' ')),
+      body: normalize(`${p.s} ${p.g}`),
+    })),
+    events: l.events.map((e) => ({
+      item: e,
+      title: e.t,
+      key: normalize(`${e.t}${e.date}`),
+      body: normalize([e.field, e.region, e.actors.join(' '), e.focus, e.note, l.eras[e.era]].join(' ')),
+    })),
+    spots: l.spots.map((s) => ({
+      item: s,
+      title: s.t,
+      key: normalize(s.t),
+      body: normalize([s.pref, s.city, s.kind, s.era, s.meaning].join(' ')),
+    })),
+    themes: l.themes.map((t) => ({ item: t, title: t.t, key: normalize(t.t), body: normalize(`${t.q} ${t.lv}`) })),
+  };
+}
+
+export function searchLibrary(l: Library, raw: string) {
+  libIndex ??= buildLibIndex(l);
+  const q = raw.slice(0, 100);
+  return {
+    people: find(libIndex.people, q, (id) => [l.people[id].s]),
+    events: find(libIndex.events, q, (e) => [e.focus, e.note, e.actors.join('・'), e.region]),
+    spots: find(libIndex.spots, q, (s) => [s.meaning, `${s.pref}${s.city}`]),
+    themes: find(libIndex.themes, q, (t) => [t.q]),
+  };
+}
+
 /** 入力の手がかりとして表示する例 */
-export const EXAMPLES = ['北条', '1590', '切腹', '八王子', '夜戦', '尾張'];
+export const EXAMPLES = ['北条', '1590', '城下町', '鎌倉', '空海', '縄文', '開国', '沖縄'];

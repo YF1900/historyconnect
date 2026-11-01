@@ -6,7 +6,19 @@ import type { Claim, ClaimType, Person, Place } from './types';
 import { add, clear, extLink, h } from './dom';
 import { distanceKm, formatKm, getCurrentPosition } from './geo';
 import { clearAllLocalData, loadSaved, storeSaved } from './storage';
-import { EXAMPLES, search } from './search';
+import { EXAMPLES, search, searchLibrary } from './search';
+import {
+  PE_DEFAULT_ROLE,
+  PS_CLASS,
+  eventStatus,
+  getLibrary,
+  loadLibrary,
+  personName,
+  wikiUrl,
+  type LibEvent,
+  type LibSpot,
+  type Library,
+} from './lib';
 
 /* ---------------- データの索引 ---------------- */
 
@@ -114,10 +126,34 @@ function markerIcon(place: Place, highlighted: boolean): L.DivIcon {
   });
 }
 
-function drawMarkers(highlightIds: Set<string> | null, fit: boolean): void {
+/**
+ * 全国データのスポットのうち、公的資料で座標を照合したものだけを地図に置く。
+ * 試験運用の施設と同じ対象（place あり）は施設のピンを使うので重ねて置かない。
+ */
+function spotHasCoord(s: LibSpot): boolean {
+  return typeof s.lat === 'number' && typeof s.lng === 'number';
+}
+function drawSpotMarkers(spots: LibSpot[], shown: L.LatLng[]): void {
+  if (!markerLayer) return;
+  for (const s of spots) {
+    if (!spotHasCoord(s) || s.place) continue;
+    const m = L.marker([s.lat!, s.lng!], {
+      icon: L.divIcon({ className: '', html: '<span class="pin pin-spot" aria-hidden="true">史</span>', iconSize: [34, 34], iconAnchor: [17, 17] }),
+      title: s.t,
+      alt: `歴史スポット：${s.t}`,
+      keyboard: true,
+    });
+    m.on('click', () => go(`#/spot/${s.id}`));
+    m.addTo(markerLayer);
+    shown.push(L.latLng(s.lat!, s.lng!));
+  }
+}
+
+function drawMarkers(highlightIds: Set<string> | null, fit: boolean, spots: LibSpot[] = []): void {
   if (!map || !markerLayer) return;
   markerLayer.clearLayers();
   const shown: L.LatLng[] = [];
+  drawSpotMarkers(spots, shown);
   for (const p of places) {
     if (!hasCoord(p)) continue;
     const hl = highlightIds ? highlightIds.has(p.id) : false;
@@ -167,10 +203,103 @@ function header(title: string, showSwitch = true): HTMLElement {
   );
 }
 
-function purposeTabs(active: Purpose): HTMLElement {
-  const tab = (p: Purpose, label: string) =>
+function purposeTabs(active: Purpose | 'themes'): HTMLElement {
+  const tab = (p: Purpose | 'themes', label: string) =>
     h('a', { href: `#/${p}`, class: `tab${p === active ? ' tab-active' : ''}`, 'aria-current': p === active ? 'page' : undefined }, label);
-  return h('div', { class: 'tabs', role: 'navigation', 'aria-label': '探し方' }, tab('nearby', '近くを探す'), tab('deep', '人物・時代'), tab('trip', '旅先で'));
+  return h(
+    'div',
+    { class: 'tabs', role: 'navigation', 'aria-label': '探し方' },
+    tab('nearby', '近く'),
+    tab('deep', '人物・時代'),
+    tab('trip', '旅先'),
+    tab('themes', 'テーマ'),
+  );
+}
+
+/* ---------------- 全国データ用の共通パーツ ---------------- */
+
+/** 全国データが必要な画面：未読み込みなら読み込んでから描き直す */
+function needLibrary(container: HTMLElement): Library | null {
+  const l = getLibrary();
+  if (l) return l;
+  const hash = location.hash;
+  add(container, h('p', { class: 'status', role: 'status' }, '全国の歴史データを読み込んでいます…'));
+  loadLibrary()
+    .then(() => {
+      if (location.hash === hash) route();
+    })
+    .catch(() => {
+      clear(container);
+      add(container, h('p', { class: 'warn' }, '歴史データを読み込めませんでした。通信状態を確認して、もう一度開いてください。'));
+    });
+  return null;
+}
+
+function statusBadge(cls: string, label: string, help?: string): HTMLElement {
+  return h('span', { class: `st ${cls}`, title: help }, label);
+}
+
+function spotCard(s: LibSpot, extra?: string): HTMLElement {
+  return h(
+    'a',
+    { href: `#/spot/${s.id}`, class: 'card' },
+    h('span', { class: 'kind kind-spot' }, '歴史スポット'),
+    h('strong', { class: 'card-title' }, s.t),
+    h('span', { class: 'card-sub' }, [`${s.pref} ${s.city}`, s.kind, extra].filter(Boolean).join('・')),
+    h('span', { class: 'card-tags' }, spotHasCoord(s) ? '地図：位置照合済み' : '地図：位置を照合中'),
+  );
+}
+
+function eventCard(e: LibEvent, extra?: string): HTMLElement {
+  return h(
+    'a',
+    { href: `#/event/${e.id}`, class: 'card' },
+    h('span', { class: 'kind kind-event' }, '出来事'),
+    h('strong', { class: 'card-title' }, `${e.t}（${e.date}）`),
+    h('span', { class: 'card-sub' }, extra ?? e.focus),
+  );
+}
+
+/** 人物ページへのリンク。試験運用データに同じ人物がいればそちらを開く */
+function personHref(l: Library, id: string): string {
+  return `#/person/${encodeURIComponent(l.pilot[id] ?? id)}`;
+}
+
+function refLinks(l: Library, conf: [string, string][]): HTMLElement | null {
+  if (!conf.length) return null;
+  return h(
+    'ul',
+    { class: 'refs' },
+    conf.map(([rid, scope]) => {
+      const r = l.refs[rid];
+      return h('li', {}, r ? extLink(r.u, r.t) : rid, h('span', { class: 'muted' }, ` 確認範囲：${scope}`));
+    }),
+  );
+}
+
+function wikiLink(title: string): HTMLElement {
+  return h(
+    'p',
+    { class: 'muted' },
+    '参考記事（追加調査用。リンク先の本文は照合していません）：',
+    extLink(wikiUrl(title), `Wikipedia「${title}」`),
+  );
+}
+
+function dataNotice(): HTMLElement {
+  return h(
+    'details',
+    { class: 'legend' },
+    h('summary', {}, '全国データの確認状況の見方'),
+    h(
+      'ul',
+      {},
+      h('li', {}, statusBadge('st-checked', '確認補助資料あり'), ' 記載した論点を参照資料で確認したもの。全記述の確認済みではありません。'),
+      h('li', {}, statusBadge('st-unchecked', '編集整理・未照合'), ' 編集上の要約で、専門家による校閲や個別の史料照合はまだです。'),
+      (['A', 'B', 'L', 'H'] as const).map((k) => h('li', {}, statusBadge(`st-${k}`, PS_CLASS[k].label), ` ${PS_CLASS[k].help}`)),
+    ),
+    h('p', { class: 'muted' }, '出来事・スポットは2026年11月1日版の編集データです。年代の「ごろ」「〜」「または」は省略せず表示しています。'),
+  );
 }
 
 function placeCard(p: Place, extra?: string): HTMLElement {
@@ -236,14 +365,15 @@ function renderStart(): void {
       { class: 'start' },
       h('h1', {}, 'ヒストリーコネクト'),
       h('p', { class: 'lead' }, '好きな人物や時代、行きたい場所から、日本の歴史をたどってみましょう。'),
-      h('p', { class: 'theme' }, '試験版テーマ：1590年 豊臣秀吉の小田原攻めと関東の城'),
+      h('p', { class: 'theme' }, '全国の出来事294件・歴史スポット160か所・人物約1,900人を収録（試験版）'),
       searchForm(),
       h(
         'div',
         { class: 'purposes' },
         option('#/nearby', '近くの施設を探す', '今いる場所や地図の中心から、近い順に並べます', '📍'),
-        option('#/deep', '好きな人物・時代を深掘りする', '人物・出来事・年代から、ゆかりの場所をたどります', '🔎'),
-        option('#/trip', '旅先で歴史に触れる', '行き先の都県を選んで、立ち寄れる場所を探します', '🧳'),
+        option('#/deep', '好きな人物・時代を深掘りする', '年表・人物・歴代天皇から、ゆかりの場所をたどります', '🔎'),
+        option('#/trip', '旅先で歴史に触れる', '行き先の都道府県を選んで、訪ねられる場所を探します', '🧳'),
+        option('#/themes', '問いから探究する', '42の探究テーマから、人物・出来事・場所を往復して調べます', '💡'),
       ),
       h('p', { class: 'start-foot' }, h('a', { href: '#/about' }, 'このアプリについて・プライバシー・出典')),
     ),
@@ -354,12 +484,20 @@ function renderDeep(): void {
 
   const peopleSorted = [...PEOPLE].filter((p) => placesWithPerson(p.id).length).sort((a, b) => placesWithPerson(b.id).length - placesWithPerson(a.id).length);
 
-  add(panel, 
-    h('h2', {}, '出来事から'),
+  const l = getLibrary();
+  if (!l) loadLibrary().then(() => location.hash.startsWith('#/deep') && renderDeep()).catch(() => {});
+  add(panel,
+    h('h2', {}, '全国の年表から'),
+    l
+      ? h('div', { class: 'chips' }, l.eras.map((era, i) => h('a', { href: `#/era/${i}`, class: 'chip' }, era)))
+      : h('p', { class: 'muted' }, '読み込み中…'),
+    h('div', { class: 'row' }, h('a', { href: '#/emperors', class: 'btn btn-ghost' }, '歴代天皇の一覧'), h('a', { href: '#/search', class: 'btn btn-ghost' }, '人物を名前で探す')),
+    h('h2', {}, '試験運用地域（小田原攻めと関東の城）'),
+    h('h3', {}, '出来事から'),
     h('div', { class: 'chips' }, EVENTS.map((e) => chip('event', e.id, `${e.name}（${e.year}）`))),
-    h('h2', {}, '人物から'),
+    h('h3', {}, '人物から'),
     h('div', { class: 'chips' }, peopleSorted.map((p) => chip('person', p.id, p.name))),
-    h('h2', {}, '年代から'),
+    h('h3', {}, '年代から'),
     h('div', { class: 'chips' }, CENTURIES.map((c) => chip('century', String(c), `${c}世紀`))),
   );
 
@@ -414,8 +552,10 @@ function renderDeep(): void {
 
 function renderTrip(): void {
   const { panel } = exploreShell('trip', '旅先で歴史に触れる');
-  const prefs = [...new Set(places.map((p) => p.prefecture))];
-  add(panel, 
+  const l = needLibrary(panel);
+  if (!l) return;
+  const prefs = l.prefs;
+  add(panel,
     h('h2', {}, '行き先を選ぶ'),
     h(
       'div',
@@ -436,16 +576,33 @@ function renderTrip(): void {
         ),
       ),
     ),
-    h('p', { class: 'note' }, '試験版のため、東京都・神奈川県・埼玉県の一部の施設のみ収録しています。'),
+    h('p', { class: 'note' }, '全国の歴史スポット160か所と、試験運用地域（東京都・神奈川県・埼玉県）の城・博物館を収録しています。'),
   );
   if (!state.prefecture) {
-    drawMarkers(null, true);
+    drawMarkers(null, true, l.spots);
     return;
   }
   const here = places.filter((p) => p.prefecture === state.prefecture);
   const hereIds = new Set(here.map((p) => p.id));
+  const prefSpots = l.spots.filter((s) => s.pref === state.prefecture);
+  // 試験運用の施設と同じ対象のスポットは、施設カードとして表示する
+  for (const s of prefSpots) if (s.place) hereIds.add(s.place);
+  const placesHere = places.filter((p) => hereIds.has(p.id));
+  const located = prefSpots.filter(spotHasCoord).length + placesHere.filter(hasCoord).length;
+  add(panel,
+    h('h2', {}, `${state.prefecture}の歴史スポット（${prefSpots.length}か所）`),
+    h('p', { class: 'note' }, located
+      ? '地図には、公的資料で位置を照合できた場所だけを表示しています。'
+      : 'この地域の場所は、地図上の位置を公的資料で照合中のため、まだ地図に表示していません（推定の位置は表示しません）。'),
+    h('div', { class: 'cards' }, prefSpots.map((s) => spotCard(s, (l.eventsBySpot.get(s.id)?.length ?? 0) ? `関連する出来事${l.eventsBySpot.get(s.id)!.length}件` : undefined))),
+  );
+  if (!placesHere.length) {
+    drawMarkers(new Set(), true, prefSpots);
+    if (!located) map?.setView([36.5, 137.5], 5);
+    return;
+  }
   const beyond = new Map<string, { place: Place; via: Set<string> }>();
-  for (const p of here) {
+  for (const p of placesHere) {
     for (const c of connectedPlaces(p)) {
       if (hereIds.has(c.place.id)) continue;
       const cur = beyond.get(c.place.id) ?? { place: c.place, via: new Set<string>() };
@@ -453,9 +610,9 @@ function renderTrip(): void {
       beyond.set(c.place.id, cur);
     }
   }
-  add(panel, 
-    h('h2', {}, `${state.prefecture}で訪ねられる場所`),
-    h('div', { class: 'cards' }, here.map((p) => placeCard(p))),
+  add(panel,
+    h('h2', {}, `${state.prefecture}の城・博物館（試験運用データ）`),
+    h('div', { class: 'cards' }, placesHere.map((p) => placeCard(p))),
     beyond.size
       ? h(
           'div',
@@ -469,7 +626,7 @@ function renderTrip(): void {
         )
       : null,
   );
-  drawMarkers(hereIds, true);
+  drawMarkers(hereIds, true, prefSpots);
 }
 
 /* ---------------- 画面：施設の詳細 ---------------- */
@@ -500,6 +657,10 @@ function renderPlace(id: string): void {
 
   const people = peopleOf(p).map((pid) => personById.get(pid)!);
   const conn = connectedPlaces(p);
+  const lib = getLibrary();
+  if (!lib) loadLibrary().then(() => location.hash === `#/place/${p.id}` && renderPlace(p.id)).catch(() => {});
+  const spot = lib?.spots.find((s) => s.place === p.id);
+  const spotEvents = spot ? lib!.eventsBySpot.get(spot.id) ?? [] : [];
 
   app.append(
     header(KIND_LABEL[p.kind]),
@@ -542,6 +703,15 @@ function renderPlace(id: string): void {
           )
         : null,
 
+      spot
+        ? h(
+            'section',
+            {},
+            h('h2', {}, '全国の年表とのつながり'),
+            h('div', { class: 'cards' }, spotEvents.map(({ ev, rel }) => eventCard(ev, `この場所との関係：${rel}`)), spotCard(spot, '全国データのスポット情報')),
+          )
+        : null,
+
       conn.length
         ? h(
             'section',
@@ -578,12 +748,115 @@ function renderPlace(id: string): void {
 
 const FACT_ORDER = ['出身', '生年', '没年', '最期', '家族', 'エピソード'] as const;
 
+/** 全国データの人物情報（人物リスト・関係データ・歴代天皇） */
+function libPersonSections(l: Library, id: string): (HTMLElement | null)[] {
+  const p = l.people[id];
+  const emps = l.emperorByPerson.get(id) ?? [];
+  const pes = [...(l.peByPerson.get(id) ?? [])].sort((a, b) => l.eventById.get(a[1])!.y - l.eventById.get(b[1])!.y);
+  const pss = l.psByPerson.get(id) ?? [];
+  return [
+    h(
+      'dl',
+      { class: 'profile' },
+      p.al.length ? [h('dt', {}, '別名'), h('dd', {}, p.al.join('・'))] : null,
+      h('dt', {}, '学習グループ'),
+      h('dd', {}, p.g, h('span', { class: 'muted' }, '（編集上の分類で、厳密な生存年代ではありません）')),
+      p.s ? [h('dt', {}, '概要'), h('dd', {}, p.s)] : null,
+      p.x
+        ? [h('dt', {}, '共通テスト'), h('dd', {}, `2024・2025年度の問題に氏名の登場を確認（${p.x}）。正解の人物であることや重要度を示すものではありません。`)]
+        : null,
+    ),
+    p.add ? h('p', { class: 'note' }, '関係資料で補完した人物です。生没年・読み・人物情報はまだ補完していません。同じ名前の別人に注意してください。') : null,
+    p.w ? wikiLink(p.w) : null,
+    emps.length
+      ? h(
+          'section',
+          {},
+          h('h2', {}, '天皇としての情報'),
+          emps.map((e) =>
+            h(
+              'div',
+              { class: 'emp' },
+              h('p', {}, h('strong', {}, `${e.d.startsWith('北') ? `北朝第${e.d.slice(1)}代` : `第${e.d}代`} ${e.n}`), `（${e.y}）`),
+              h('p', {}, '生没年：', e.life),
+              h('p', {}, statusBadge('st-kind', e.k), ' ', e.ep),
+              e.same ? h('p', { class: 'muted' }, `第${e.same}代と同一人物（重祚）`) : null,
+            ),
+          ),
+          h('p', { class: 'muted' }, '出典：宮内庁「天皇系図」ほか（', h('a', { href: '#/emperors' }, '歴代天皇の一覧'), '）'),
+        )
+      : null,
+    pes.length
+      ? h(
+          'section',
+          {},
+          h('h2', {}, `関わった出来事（${pes.length}件）`),
+          h('p', { class: 'note' }, '出来事に登場することは、その出来事に関わる場所すべてを訪れたことを意味しません。'),
+          h(
+            'ol',
+            { class: 'claims timeline' },
+            pes.map(([, eid, role, note]) => {
+              const ev = l.eventById.get(eid)!;
+              return h(
+                'li',
+                { class: 'claim' },
+                h('a', { href: `#/event/${eid}`, class: 'claim-place' }, `${ev.t}（${ev.date}）`),
+                h('p', {}, '役割：', role || PE_DEFAULT_ROLE),
+                note ? h('p', { class: 'muted' }, `注記：${note}`) : null,
+              );
+            }),
+          ),
+        )
+      : null,
+    pss.length
+      ? h(
+          'section',
+          {},
+          h('h2', {}, `ゆかりの歴史スポット（${pss.length}件）`),
+          h(
+            'ul',
+            { class: 'claims' },
+            pss.map(([, sid, role, period, cls, , note]) =>
+              h(
+                'li',
+                { class: 'claim' },
+                statusBadge(`st-${cls}`, PS_CLASS[cls].label, PS_CLASS[cls].help),
+                h('a', { href: `#/spot/${sid}`, class: 'claim-place' }, l.spotById.get(sid)!.t),
+                h('p', {}, `${role}（${period}）`),
+                note ? h('p', { class: 'muted' }, `注意：${note}`) : null,
+              ),
+            ),
+          ),
+          dataNotice(),
+        )
+      : null,
+  ];
+}
+
 function renderPerson(id: string): void {
+  const lib = getLibrary();
   const person = personById.get(id);
   if (!person) {
-    go('#/');
+    clear(app);
+    const main = h('main', { class: 'detail' });
+    app.append(header('人物'), main);
+    const l = needLibrary(main);
+    if (!l) return;
+    if (l.pilot[id]) return void location.replace(`#/person/${l.pilot[id]}`);
+    const p = l.people[id];
+    if (!p) return void go('#/');
+    add(
+      main,
+      h('button', { type: 'button', class: 'back', onclick: () => history.back() }, '← もどる'),
+      h('span', { class: 'kind kind-person' }, '人物'),
+      h('h1', {}, p.n),
+      ...libPersonSections(l, id),
+    );
+    window.scrollTo(0, 0);
     return;
   }
+  if (!lib) loadLibrary().then(() => location.hash === `#/person/${id}` && renderPerson(id)).catch(() => {});
+  const libId = lib?.pilotReverse.get(person.id);
   clear(app);
   const related = placesWithPerson(person.id);
   const facts = [...(person.facts ?? [])].sort((a, b) => FACT_ORDER.indexOf(a.label) - FACT_ORDER.indexOf(b.label));
@@ -643,9 +916,292 @@ function renderPerson(id: string): void {
       timeline.length
         ? h('section', {}, h('h2', {}, '登場する出来事を年代順に'), h('ol', { class: 'claims timeline' }, timeline.map((t) => claimItem(t.c, t.p))))
         : null,
+      lib && libId ? h('section', { class: 'lib-sec' }, h('h2', {}, '全国データでの情報'), ...libPersonSections(lib, libId)) : null,
     ),
   );
   window.scrollTo(0, 0);
+}
+
+/* ---------------- 画面：全国データ（出来事・スポット・年表・天皇・テーマ） ---------------- */
+
+function detailShell(title: string): HTMLElement {
+  clear(app);
+  const main = h('main', { class: 'detail' });
+  app.append(header(title), main);
+  window.scrollTo(0, 0);
+  return main;
+}
+const backBtn = () => h('button', { type: 'button', class: 'back', onclick: () => history.back() }, '← もどる');
+
+function renderEvent(id: string): void {
+  const main = detailShell('出来事');
+  const l = needLibrary(main);
+  if (!l) return;
+  const e = l.eventById.get(id);
+  if (!e) return void go('#/');
+  const st = eventStatus(e);
+  const pes = l.peByEvent.get(e.id) ?? [];
+  const idx = l.events.indexOf(e);
+  const prev = l.events[idx - 1];
+  const next = l.events[idx + 1];
+  add(
+    main,
+    backBtn(),
+    h('span', { class: 'kind kind-event' }, '出来事'),
+    h('h1', {}, e.t),
+    h('p', { class: 'kana' }, `${e.date}・`, h('a', { href: `#/era/${e.era}` }, l.eras[e.era])),
+    h('p', {}, statusBadge(st.cls, st.label)),
+    h('dl', { class: 'profile' }, h('dt', {}, '分野'), h('dd', {}, e.field), h('dt', {}, '主な地域'), h('dd', {}, e.region)),
+    h('h2', {}, '学習の焦点'),
+    h('p', {}, e.focus),
+    h('p', { class: 'muted' }, '編集上の要約です。因果関係を一つに断定するものではありません。'),
+    e.note ? [h('h2', {}, '年代・解釈の注意'), h('p', { class: 'warn' }, e.note)] : null,
+    h('h2', {}, '関連人物・主体'),
+    pes.length
+      ? h(
+          'ul',
+          { class: 'claims' },
+          pes.map(([pid, , role, note]) =>
+            h(
+              'li',
+              { class: 'claim' },
+              h('a', { href: personHref(l, pid), class: 'claim-place' }, personName(l, pid)),
+              h('p', {}, '役割：', role || PE_DEFAULT_ROLE),
+              note ? h('p', { class: 'muted' }, `注記：${note}`) : null,
+            ),
+          ),
+        )
+      : null,
+    e.actors.length ? h('p', { class: 'muted' }, `資料の記載：${e.actors.join('・')}（組織・集団は人物として登録していません）`) : h('p', { class: 'muted' }, '本版では個別の人物を登録していません（関わった人がいないという意味ではありません）。'),
+    h('h2', {}, '関連する歴史スポット'),
+    e.spots.length
+      ? [
+          h('p', { class: 'note' }, '関係の種類を表示しています。すべてが出来事の起きた場所とは限りません（後世の記念施設・比較資料なども含みます）。'),
+          h('div', { class: 'cards' }, e.spots.map(([sid, rel]) => spotCard(l.spotById.get(sid)!, `関係：${rel}`))),
+        ]
+      : h('p', { class: 'muted' }, '本版では未登録です（場所が存在しないという意味ではありません）。'),
+    e.conf.length ? [h('h2', {}, '確認補助資料'), refLinks(l, e.conf)] : null,
+    wikiLink(e.wiki),
+    dataNotice(),
+    h(
+      'div',
+      { class: 'row pager' },
+      prev ? h('a', { href: `#/event/${prev.id}`, class: 'btn btn-ghost' }, `← ${prev.t}`) : null,
+      next ? h('a', { href: `#/event/${next.id}`, class: 'btn btn-ghost' }, `${next.t} →`) : null,
+    ),
+  );
+}
+
+function renderSpot(id: string): void {
+  const main = detailShell('歴史スポット');
+  const l = needLibrary(main);
+  if (!l) return;
+  const s = l.spotById.get(id);
+  if (!s) return void go('#/');
+  const evs = [...(l.eventsBySpot.get(s.id) ?? [])].sort((a, b) => a.ev.y - b.ev.y);
+  const pss = l.psBySpot.get(s.id) ?? [];
+  const saved = state.saved.has(s.id);
+  const mapWrap = h('div', { class: 'map-wrap map-inline' });
+  add(
+    main,
+    backBtn(),
+    h('span', { class: 'kind kind-spot' }, '歴史スポット'),
+    h('h1', {}, s.t),
+    h('p', { class: 'kana' }, `${s.pref} ${s.city}・${s.kind}・主な時代：${s.era}`),
+    h(
+      'div',
+      { class: 'row' },
+      h(
+        'button',
+        {
+          type: 'button',
+          class: `btn${saved ? ' btn-ghost' : ''}`,
+          'aria-pressed': saved ? 'true' : 'false',
+          onclick: () => {
+            if (state.saved.has(s.id)) state.saved.delete(s.id);
+            else state.saved.add(s.id);
+            storeSaved(state.saved);
+            renderSpot(s.id);
+          },
+        },
+        saved ? '★ 行きたい に登録済み' : '☆ 行きたい に追加',
+      ),
+      s.place ? h('a', { href: `#/place/${s.place}`, class: 'btn btn-ghost' }, '施設の詳しい情報を見る') : null,
+    ),
+    spotHasCoord(s)
+      ? [mapWrap, h('p', { class: 'muted' }, `地図上の位置：${s.coord?.memo || ''}`, s.coord?.url ? [' 根拠：', extLink(s.coord.url, s.coord.src), `（確認日 ${s.coord.checked}）`] : null)]
+      : h(
+          'p',
+          { class: 'warn' },
+          `地図上の位置は、公的資料による照合がまだ済んでいないため表示していません（推定の位置は表示しません）。所在地の概略：${s.pref} ${s.city}`,
+        ),
+    h('h2', {}, '歴史的な意味・見方'),
+    h('p', {}, s.meaning),
+    h('p', { class: 'muted' }, '当時の遺構・復元建物・後世の記念施設・伝承地を区別して見てください。'),
+    h('h2', {}, `関連する出来事（${evs.length}件）`),
+    evs.length
+      ? h('div', { class: 'cards' }, evs.map(({ ev, rel }) => eventCard(ev, `この場所との関係：${rel}`)))
+      : h('p', { class: 'muted' }, '本版の出来事リストには未接続です（歴史的に重要でないという意味ではありません）。'),
+    pss.length
+      ? [
+          h('h2', {}, `ゆかりの人物（${pss.length}人）`),
+          h(
+            'ul',
+            { class: 'claims' },
+            pss.map(([pid, , role, period, cls, , note]) =>
+              h(
+                'li',
+                { class: 'claim' },
+                statusBadge(`st-${cls}`, PS_CLASS[cls].label, PS_CLASS[cls].help),
+                h('a', { href: personHref(l, pid), class: 'claim-place' }, personName(l, pid)),
+                h('p', {}, `${role}（${period}）`),
+                note ? h('p', { class: 'muted' }, `注意：${note}`) : null,
+              ),
+            ),
+          ),
+        ]
+      : null,
+    s.conf.length ? [h('h2', {}, '確認補助資料'), refLinks(l, s.conf)] : null,
+    wikiLink(s.wiki),
+    h('p', { class: 'warn' }, '開館日・料金・予約・立入可否・災害復旧状況は収録していません。訪れる前に運営主体の最新情報を確認してください。'),
+    dataNotice(),
+  );
+  if (spotHasCoord(s)) {
+    ensureMap(mapWrap);
+    drawMarkers(s.place ? new Set([s.place]) : new Set(), false, [s]);
+    setTimeout(() => map?.setView([s.lat!, s.lng!], 15), 0);
+  }
+}
+
+function renderEra(idx: number): void {
+  const main = detailShell('年表');
+  const l = needLibrary(main);
+  if (!l) return;
+  if (!l.eras[idx]) return void go('#/deep');
+  const evs = l.events.filter((e) => e.era === idx);
+  add(
+    main,
+    backBtn(),
+    h('h1', {}, l.eras[idx]),
+    h('div', { class: 'chips' }, l.eras.map((era, i) => h('a', { href: `#/era/${i}`, class: `chip${i === idx ? ' chip-on' : ''}`, 'aria-current': i === idx ? 'page' : undefined }, era))),
+    h('p', { class: 'note' }, `出来事${evs.length}件。時代区分は閲覧用の編集区分で、時代の境界についての唯一の学説ではありません。`),
+    h('div', { class: 'cards' }, evs.map((e) => eventCard(e, `${e.field}・${e.region}`))),
+    dataNotice(),
+  );
+}
+
+function renderEmperors(): void {
+  const main = detailShell('歴代天皇');
+  const l = needLibrary(main);
+  if (!l) return;
+  add(
+    main,
+    backBtn(),
+    h('h1', {}, '歴代天皇'),
+    h('p', {}, '第1代〜第126代と、本表の代数に含まれない北朝の5天皇です。代数は宮内庁の天皇系図の体系に沿っています。'),
+    h(
+      'ul',
+      { class: 'muted' },
+      h('li', {}, '名前は主に諡号・追号で、生前の名前とは異なります。'),
+      h('li', {}, '第1〜25代は記紀の伝承年代を実証された生没年として採用せず「不詳」としています。「?」は推定・異説のある年です。'),
+      h('li', {}, '「伝承」「史書の記述」はその話が史料に記されていることを示し、出来事そのものが実証されたという意味ではありません。'),
+      h('li', {}, '第35代と第37代、第46代と第48代は同一人物（重祚）です。'),
+    ),
+    l.emperorSecs.map((sec, si) => [
+      h('h2', {}, sec),
+      h(
+        'ul',
+        { class: 'claims' },
+        l.emperors
+          .filter((e) => e.sec === si)
+          .map((e) =>
+            h(
+              'li',
+              { class: 'claim' },
+              h('p', {}, h('strong', {}, e.d.startsWith('北') ? `北朝${e.d.slice(1)}` : `${e.d}`), ' ', e.pid ? h('a', { href: personHref(l, e.pid) }, e.n) : e.n, h('span', { class: 'muted' }, `（${e.y}）`)),
+              h('p', { class: 'muted' }, `生没年：${e.life}`),
+              h('p', {}, statusBadge('st-kind', e.k), ' ', e.ep),
+            ),
+          ),
+      ),
+    ]).flat(),
+    h(
+      'p',
+      { class: 'muted' },
+      '主な参照資料：',
+      extLink('https://www.kunaicho.go.jp/learn/about/kosei/keizu.html', '宮内庁「天皇系図」'),
+      '（確認日 2026年11月1日）。上皇・今上天皇の状態は2026年11月1日時点です。',
+    ),
+  );
+}
+
+function renderThemes(): void {
+  clear(app);
+  const main = h('main', { class: 'detail' });
+  app.append(header('探究テーマ'), purposeTabs('themes'), main);
+  window.scrollTo(0, 0);
+  const l = needLibrary(main);
+  if (!l) return;
+  add(
+    main,
+    h('h1', {}, '問いから探究する'),
+    h('p', {}, '好きな問いを選び、人物・出来事・場所を往復して調べましょう。問いの文面は検証すべき論点であって、結論ではありません。'),
+    ['入門', '標準', '発展'].map((lv) => [
+      h('h2', {}, lv),
+      h(
+        'div',
+        { class: 'cards' },
+        l.themes
+          .filter((t) => t.lv === lv)
+          .map((t) => h('a', { href: `#/theme/${t.id}`, class: 'card' }, h('span', { class: 'kind kind-theme' }, `テーマ・${t.lv}`), h('strong', { class: 'card-title' }, t.t), h('span', { class: 'card-sub' }, t.q))),
+      ),
+    ]).flat(),
+    h('p', { class: 'muted' }, '難度は教材設計上の目安です。入門は資料の観察・分類、標準は複数資料の比較、発展は史料批判や複数の説明の検討を想定しています。'),
+  );
+}
+
+function renderTheme(id: string): void {
+  const main = detailShell('探究テーマ');
+  const l = needLibrary(main);
+  if (!l) return;
+  const t = l.themeById.get(id);
+  if (!t) return void go('#/themes');
+  add(
+    main,
+    backBtn(),
+    h('span', { class: 'kind kind-theme' }, `探究テーマ・${t.lv}`),
+    h('h1', {}, t.t),
+    h('p', { class: 'lead' }, `中心の問い：${t.q}`),
+    h('h2', {}, '調べる順番'),
+    h('ol', {}, t.steps.map((s) => h('li', {}, s))),
+    h('dl', { class: 'profile' }, h('dt', {}, '成果物'), h('dd', {}, t.o), h('dt', {}, '解釈上の注意'), h('dd', {}, t.c)),
+    h('h2', {}, '人物'),
+    t.p.length
+      ? h('div', { class: 'chips' }, t.p.map((pid) => h('a', { href: personHref(l, pid), class: 'chip' }, personName(l, pid))))
+      : h('p', { class: 'muted' }, '指定なし。資料に名前のない人々の活動も対象とします。'),
+    h('h2', {}, '出来事'),
+    t.e.length ? h('div', { class: 'cards' }, t.e.map((eid) => eventCard(l.eventById.get(eid)!))) : h('p', { class: 'muted' }, '固定の指定なし。問いに合わせて選びます。'),
+    h('h2', {}, '歴史スポット'),
+    t.s.length
+      ? h('div', { class: 'cards' }, t.s.map((sid) => spotCard(l.spotById.get(sid)!)))
+      : h('p', {}, '固定の指定なし。', h('a', { href: '#/trip' }, '旅先（都道府県）から一地点を選ぶ'), 'ところから始めましょう。'),
+    h('p', { class: 'note' }, 'ここに挙げた人物・出来事・場所は比較・学習の対象であり、全員がすべての場所にいたことや、直接の因果関係、訪問の順序を意味しません。'),
+    h(
+      'details',
+      { class: 'legend' },
+      h('summary', {}, '共通の探究手順'),
+      h(
+        'ol',
+        {},
+        h('li', {}, '問いに対する仮説と、確かめられる資料を分けて書く。'),
+        h('li', {}, '少なくとも性質の異なる2種類の資料を比べる（例：史料の翻刻・訳と研究解説、発掘調査報告書と展示解説）。'),
+        h('li', {}, '各主張に出典名・URLまたは書誌・該当箇所・閲覧日を付ける。転載画像は権利情報も記録する。'),
+        h('li', {}, '事実、史料の記述、研究上の解釈、自分の仮説を区別する。反例と未解決点を残す。'),
+        h('li', {}, '現地で観察する場合は、当時の遺構・復元・後世の記念施設を区別する。開館情報は別途最新情報を確認する。'),
+      ),
+      h('p', { class: 'muted' }, '成果物の基本形：問い／仮説／観察・史料／比較／暫定的な説明／反例・限界／出典。'),
+    ),
+  );
 }
 
 /* ---------------- 画面：検索 ---------------- */
@@ -722,13 +1278,40 @@ function updateSearchResults(): void {
     return;
   }
   const r = search(q);
-  const total = r.places.length + r.people.length + r.events.length;
-  add(searchResults, h('p', { class: 'status' }, total ? `「${q}」の検索結果：${total}件` : `「${q}」に一致する情報は見つかりませんでした。`));
+  const l = getLibrary();
+  if (!l) loadLibrary().then(() => location.hash.startsWith('#/search') && updateSearchResults()).catch(() => {});
+  const lr = l ? searchLibrary(l, q) : null;
+  // 試験運用データと同じ人物は重ねて表示しない
+  if (lr) lr.people = lr.people.filter((hit) => !l!.pilot[hit.item]);
+  const total = r.places.length + r.people.length + r.events.length + (lr ? lr.people.length + lr.events.length + lr.spots.length + lr.themes.length : 0);
+  add(searchResults, h('p', { class: 'status' }, total ? `「${q}」の検索結果：${total}件` : l ? `「${q}」に一致する情報は見つかりませんでした。` : '全国の歴史データを読み込んでいます…'));
+  const LIMIT = 40;
+  const more = (n: number) => (n > LIMIT ? h('p', { class: 'muted' }, `ほか${n - LIMIT}件。言葉を増やして絞り込んでください（空白で区切るとすべてを含むものを探します）。`) : null);
+  if (lr?.themes.length)
+    add(searchResults, h('h2', {}, `探究テーマ（${lr.themes.length}）`), h('div', { class: 'cards' }, lr.themes.slice(0, LIMIT).map((hit) => h('a', { href: `#/theme/${hit.item.id}`, class: 'card' }, h('span', { class: 'kind kind-theme' }, `テーマ・${hit.item.lv}`), h('strong', { class: 'card-title' }, hit.item.t), h('span', { class: 'card-sub' }, hit.item.q)))));
+  if (lr?.events.length)
+    add(searchResults, h('h2', {}, `全国の出来事（${lr.events.length}）`), h('div', { class: 'cards' }, lr.events.slice(0, LIMIT).map((hit) => eventCard(hit.item, hit.snippet))), more(lr.events.length));
+  if (lr?.spots.length)
+    add(searchResults, h('h2', {}, `歴史スポット（${lr.spots.length}）`), h('div', { class: 'cards' }, lr.spots.slice(0, LIMIT).map((hit) => spotCard(hit.item, hit.snippet))), more(lr.spots.length));
   if (r.people.length)
     add(
       searchResults,
-      h('h2', {}, `人物（${r.people.length}）`),
+      h('h2', {}, `人物（詳しい情報あり）（${r.people.length}）`),
       h('div', { class: 'cards' }, r.people.map((hit) => personCard(hit.item, hit.snippet))),
+    );
+  if (lr?.people.length)
+    add(
+      searchResults,
+      h('h2', {}, `人物リスト（${lr.people.length}）`),
+      h(
+        'div',
+        { class: 'cards' },
+        lr.people.slice(0, LIMIT).map((hit) => {
+          const p = l!.people[hit.item];
+          return h('a', { href: personHref(l!, hit.item), class: 'card' }, h('span', { class: 'kind kind-person' }, '人物'), h('strong', { class: 'card-title' }, p.n), h('span', { class: 'card-sub' }, [p.g, hit.snippet ?? p.s].filter(Boolean).join('・')));
+        }),
+      ),
+      more(lr.people.length),
     );
   if (r.places.length)
     add(
@@ -739,7 +1322,7 @@ function updateSearchResults(): void {
   if (r.events.length)
     add(
       searchResults,
-      h('h2', {}, `出来事（${r.events.length}）`),
+      h('h2', {}, `小田原攻めの出来事（${r.events.length}）`),
       h(
         'div',
         { class: 'cards' },
@@ -754,7 +1337,7 @@ function updateSearchResults(): void {
                 go('#/deep');
               },
             },
-            h('span', { class: 'kind kind-event' }, '出来事'),
+            h('span', { class: 'kind kind-event' }, '出来事（試験運用）'),
             h('strong', { class: 'card-title' }, `${hit.item.name}（${hit.item.year}年）`),
             h('span', { class: 'card-sub' }, hit.item.summary.slice(0, 60) + '…'),
           ),
@@ -778,6 +1361,10 @@ function personCard(p: Person, extra?: string): HTMLElement {
 function renderSaved(): void {
   clear(app);
   const list = [...state.saved].map((id) => placeById.get(id)).filter((p): p is Place => !!p);
+  const spotIds = [...state.saved].filter((id) => id.startsWith('SPT-'));
+  const l = getLibrary();
+  if (spotIds.length && !l) loadLibrary().then(() => location.hash.startsWith('#/saved') && renderSaved()).catch(() => {});
+  const spots = l ? spotIds.map((id) => l.spotById.get(id)).filter((s): s is LibSpot => !!s) : [];
   app.append(
     header('行きたい場所'),
     h(
@@ -785,7 +1372,9 @@ function renderSaved(): void {
       { class: 'detail' },
       h('h1', {}, '行きたい場所'),
       h('p', { class: 'note' }, 'この一覧は、お使いの端末のブラウザ内にだけ保存されています。'),
-      list.length ? h('div', { class: 'cards' }, list.map((p) => placeCard(p))) : h('p', {}, 'まだ登録がありません。施設の詳細画面から追加できます。'),
+      list.length || spotIds.length
+        ? h('div', { class: 'cards' }, list.map((p) => placeCard(p)), spots.map((s) => spotCard(s)))
+        : h('p', {}, 'まだ登録がありません。施設・歴史スポットの詳細画面から追加できます。'),
     ),
   );
 }
@@ -805,14 +1394,20 @@ function renderAbout(): void {
       'main',
       { class: 'detail about' },
       h('h1', {}, 'このアプリについて'),
-      h('p', {}, 'ヒストリーコネクトは、人物・出来事・年代・場所を手がかりに、日本の歴史と関連する施設を探せるWebアプリです。現在は試験版で、収録している施設はごく一部です。'),
+      h('p', {}, 'ヒストリーコネクトは、人物・出来事・年代・場所を手がかりに、日本の歴史と関連する施設を探せるWebアプリです。現在は試験版です。'),
 
+      h('h2', {}, '収録しているデータ'),
+      h('ul', {}, [
+        h('li', {}, '試験運用地域（1590年の小田原攻めと関東の城）：城・博物館8か所と人物・出来事。すべての記述に出典を付け、「史実」「説」「伝承」を区別しています。'),
+        h('li', {}, '全国データ（2026年11月1日版）：出来事294件、歴史スポット160か所、人物1,891人と補完人物33人、人物と出来事・場所の関係、探究テーマ42件、歴代天皇。'),
+      ]),
       h('h2', {}, '情報の正確性について'),
       h('ul', {}, [
-        h('li', {}, 'すべての記述に出典を付け、出典に書かれている範囲で記載しています。'),
-        h('li', {}, '「史実」「説」「伝承」を区別して表示しています。'),
-        h('li', {}, '開館時間・料金などは変わることがあるため、掲載日を示しています。お出かけ前に公式情報を確認してください。'),
-        h('li', {}, '地図上の位置は、公式情報で確認した住所を国土地理院の住所検索で変換したものです。広い城跡などでは代表点になっています。'),
+        h('li', {}, '全国データは編集上の整理を含み、専門家による全件の校閲は済んでいません。各項目に確認状況（「確認補助資料あり」「編集整理・未照合」「学習上の関連」「説・比定」など）を表示しています。'),
+        h('li', {}, '年代の「ごろ」「〜」「または」などは省略せず表示し、生没年が不詳のものは年表上の点として扱いません。'),
+        h('li', {}, '開館時間・料金などは変わることがあります。お出かけ前に公式情報を確認してください。'),
+        h('li', {}, '地図上の位置は、公式情報で確認した住所を国土地理院の住所検索で変換したものなど、公的資料で照合できたものだけを表示しています。推定の位置は表示しません。広い史跡では代表点です。'),
+        h('li', {}, '人物の画像は掲載していません。参考記事（Wikipedia）へのリンクは追加調査の入口で、リンク先の内容は照合していません。'),
       ]),
 
       h('h2', { id: 'privacy' }, 'プライバシーポリシー（個人情報の取り扱い）'),
@@ -861,18 +1456,37 @@ function renderAbout(): void {
           ),
         ),
       ),
+      h('p', {}, '全国データ（出来事・人物など）はこのサイトのファイルから読み込むため、上記以外への送信は発生しません。出典や参考記事などの外部サイトへのリンクは、利用者が押したときだけそのサイトを開きます。'),
       h('p', {}, '参照元のURL（リファラー）は外部に送らない設定にしています。各送信先での取り扱いは、それぞれの方針をご確認ください：', extLink('https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html', '国土地理院コンテンツ利用規約'), '、', extLink('https://docs.github.com/ja/site-policy/privacy-policies/github-general-privacy-statement', 'GitHub一般プライバシーステートメント'), '。'),
       h('h3', {}, '4. EU・英国などからのご利用（GDPR）'),
       h('p', {}, '運営者は利用者の個人データを収集しません。位置情報は端末内でのみ処理されます。地図の表示と配信のための通信は、上記の各送信先によって処理されます。'),
       h('h3', {}, '5. お問い合わせ・改定'),
-      h('p', {}, '運営者：', h('strong', {}, '（公開前に運営者名と連絡先を記入してください）')),
-      h('p', { class: 'muted' }, '制定日：2026年11月1日'),
+      h('p', {}, '運営者：', h('strong', {}, 'Yoshio Fujimatsu（個人プロジェクト）')),
+      h(
+        'p',
+        {},
+        'お問い合わせ：',
+        extLink('https://github.com/YF1900/historyconnect/issues', 'GitHubのIssues'),
+        'で受け付けています。Issuesは公開の場所のため、氏名・住所・連絡先などの個人情報は書き込まないでください。',
+      ),
+      h('p', {}, 'このポリシーを変更するときは、このページで改定日とともにお知らせします。'),
+      h('p', { class: 'muted' }, '制定日：2026年11月1日／改定日：2026年11月1日（運営者・お問い合わせ先・全国データの追加を反映）'),
 
       h('h2', {}, '地図・ソフトウェア'),
       h('p', {}, '地図：', extLink('https://maps.gsi.go.jp/development/ichiran.html', '地理院タイル（国土地理院）'), '／地図表示：', extLink('https://leafletjs.com', 'Leaflet'), '（BSD-2-Clauseライセンス）'),
 
-      h('h2', {}, '出典一覧'),
+      h('h2', {}, '出典一覧（試験運用地域）'),
       sourcesList,
+      h('h2', {}, '全国データの出典'),
+      h('p', {}, '出来事・歴史スポット・関係・探究テーマ・歴代天皇は、運営者が編集した資料（2026年11月1日版）に基づきます。人物リストの概要はWikidata・Wikipediaの記載、共通テストの氏名登場は大学入試センターの公開問題（2024・2025年度）との照合によるものです。個別に確認に用いた資料は次のとおりです。'),
+      (() => {
+        const l = getLibrary();
+        if (!l) {
+          loadLibrary().then(() => location.hash.startsWith('#/about') && renderAbout()).catch(() => {});
+          return h('p', { class: 'muted' }, '読み込み中…');
+        }
+        return h('ul', { class: 'sources' }, Object.values(l.refs).map((r) => h('li', {}, extLink(r.u, r.t), h('span', { class: 'muted' }, ` ${r.s}`))));
+      })(),
     ),
   );
 }
@@ -905,6 +1519,18 @@ function route(): void {
       return renderPerson(decodeURIComponent(arg ?? ''));
     case 'search':
       return renderSearch();
+    case 'event':
+      return renderEvent(decodeURIComponent(arg ?? ''));
+    case 'spot':
+      return renderSpot(decodeURIComponent(arg ?? ''));
+    case 'era':
+      return renderEra(Number(arg));
+    case 'emperors':
+      return renderEmperors();
+    case 'themes':
+      return renderThemes();
+    case 'theme':
+      return renderTheme(decodeURIComponent(arg ?? ''));
     case 'saved':
       return renderSaved();
     case 'about':
