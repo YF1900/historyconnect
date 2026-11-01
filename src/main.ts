@@ -4,7 +4,7 @@ import L from 'leaflet';
 import { EVENTS, PEOPLE, PLACES, SOURCES } from './data';
 import type { Claim, ClaimType, Person, Place } from './types';
 import { add, clear, extLink, h } from './dom';
-import { distanceKm, formatKm, getCurrentPosition } from './geo';
+import { distanceKm, formatKm, watchPosition } from './geo';
 import { clearAllLocalData, loadSaved, storeSaved } from './storage';
 import { EXAMPLES, search, searchLibrary } from './search';
 import {
@@ -97,6 +97,9 @@ const state = {
   focus: null as Focus,
   prefecture: '' as string,
   query: '' as string,
+  tracking: false,
+  acc: 0,
+  selected: '' as string,
 };
 
 /* ---------------- 地図 ---------------- */
@@ -227,7 +230,7 @@ function purposeTabs(active: Purpose | 'themes'): HTMLElement {
   return h(
     'div',
     { class: 'tabs', role: 'navigation', 'aria-label': '探し方' },
-    tab('nearby', '近く'),
+    tab('nearby', '地図'),
     tab('deep', '人物・時代'),
     tab('trip', '旅先'),
     tab('themes', 'テーマ'),
@@ -388,7 +391,7 @@ function renderStart(): void {
       h(
         'div',
         { class: 'purposes' },
-        option('#/nearby', '近くの施設を探す', '今いる場所や地図の中心から、近い順に並べます', '📍'),
+        option('#/nearby', '地図から選ぶ・現在地から追う', '地図のピンから選んだり、歩きながら近くの場所を確かめたりできます', '📍'),
         option('#/deep', '好きな人物・時代を深掘りする', '年表・人物・歴代天皇から、ゆかりの場所をたどります', '🔎'),
         option('#/trip', '旅先で歴史に触れる', '行き先の都道府県を選んで、訪ねられる場所を探します', '🧳'),
         option('#/themes', '問いから探究する', '42の探究テーマから、人物・出来事・場所を往復して調べます', '💡'),
@@ -410,74 +413,291 @@ function exploreShell(purpose: Purpose, title: string): { panel: HTMLElement } {
   return { panel };
 }
 
-function renderNearby(): void {
-  const { panel } = exploreShell('nearby', '近くを探す');
+/* ---------------- 地図から選ぶ・現在地から追う ---------------- */
 
-  const locateBtn = h(
-    'button',
-    {
-      type: 'button',
-      class: 'btn',
-      onclick: async () => {
-        state.hereStatus = '現在地を確認しています…';
-        renderNearby();
-        try {
-          state.here = await getCurrentPosition();
-          state.hereStatus = '';
-        } catch (e) {
-          state.hereStatus = (e as Error).message;
-        }
-        renderNearby();
-        drawMarkers(null, true);
-      },
+interface MapItem {
+  key: string;
+  name: string;
+  /** 表示用の種類 */
+  label: string;
+  pin: 'castle' | 'museum' | 'spot';
+  lat: number;
+  lng: number;
+  href: string;
+  /** スタンプの記録先 */
+  stamp: string;
+  official: boolean;
+}
+
+/** 地図に置ける場所（公的資料で位置を照合できたものだけ）。同じ対象は1つにまとめる */
+function mapItems(l: Library | null): MapItem[] {
+  const out: MapItem[] = [];
+  const meijo = (id: string) => {
+    const cid = l?.castleOf.get(id);
+    const c = cid ? l!.castleById.get(cid) : undefined;
+    return c ? `${castleSeries(c)} ${c.n}` : '';
+  };
+  for (const p of places) {
+    if (!hasCoord(p)) continue;
+    const m = meijo(p.id);
+    out.push({ key: p.id, name: p.name, label: [KIND_LABEL[p.kind], m].filter(Boolean).join('・'), pin: p.kind, lat: p.lat, lng: p.lng, href: `#/place/${p.id}`, stamp: stampKey(l, p.id), official: !!m });
+  }
+  for (const s of l?.spots ?? []) {
+    if (!spotHasCoord(s) || s.place) continue;
+    const m = meijo(s.id);
+    out.push({ key: s.id, name: s.t, label: ['歴史スポット', m].filter(Boolean).join('・'), pin: 'spot', lat: s.lat!, lng: s.lng!, href: `#/spot/${s.id}`, stamp: stampKey(l, s.id), official: !!m });
+  }
+  return out;
+}
+
+const NEAR_KM = 0.3;
+let stopWatch: (() => void) | null = null;
+let followMap = true;
+let lastListUpdate = 0;
+
+function stopTracking(): void {
+  stopWatch?.();
+  stopWatch = null;
+  state.tracking = false;
+  state.acc = 0;
+}
+
+function drawHere(): void {
+  if (!hereLayer) return;
+  hereLayer.clearLayers();
+  if (!state.here) return;
+  if (state.acc) L.circle([state.here.lat, state.here.lng], { radius: state.acc, color: '#3b82f6', weight: 1, fillOpacity: 0.08, interactive: false }).addTo(hereLayer);
+  L.circleMarker([state.here.lat, state.here.lng], { radius: 8, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 })
+    .bindTooltip('現在地（端末内でのみ使用）')
+    .addTo(hereLayer);
+}
+
+function drawItems(items: MapItem[], fit: boolean): void {
+  if (!map || !markerLayer) return;
+  markerLayer.clearLayers();
+  for (const it of items) {
+    const sel = state.selected === it.key;
+    const m = L.marker([it.lat, it.lng], {
+      icon: L.divIcon({
+        className: '',
+        html: `<span class="pin pin-${it.pin}${sel ? ' pin-hl' : ''}" aria-hidden="true">${it.pin === 'castle' ? '城' : it.pin === 'museum' ? '館' : '史'}</span>`,
+        iconSize: [40, 40],
+        iconAnchor: [20, 20],
+      }),
+      title: it.name,
+      alt: `${it.label}：${it.name}`,
+      keyboard: true,
+      zIndexOffset: sel ? 1000 : 0,
+    });
+    m.on('click', () => {
+      state.selected = it.key;
+      followMap = false;
+      renderNearby(false);
+      keepAboveCard(it);
+    });
+    m.addTo(markerLayer);
+  }
+  drawHere();
+  if (fit) {
+    const pts = items.map((i) => L.latLng(i.lat, i.lng));
+    if (state.here) pts.push(L.latLng(state.here.lat, state.here.lng));
+    if (pts.length > 1) map.fitBounds(L.latLngBounds(pts).pad(0.2), { maxZoom: 14 });
+    else if (pts.length === 1) map.setView(pts[0], 13);
+  }
+}
+
+/** 選択カードが出ているときは、カードに隠れない位置を中心にする */
+function centerWithCard(lat: number, lng: number, zoom: number, animate: boolean): void {
+  if (!map) return;
+  const card = selectionBox.childElementCount ? selectionBox.getBoundingClientRect().height : 0;
+  const target = map.project([lat, lng], zoom).add([0, card / 2]);
+  map.setView(map.unproject(target, zoom), zoom, { animate });
+}
+
+/** 選んだピンが下の選択カードに隠れないよう、地図を少し上へずらす */
+function keepAboveCard(it: MapItem): void {
+  if (!map) return;
+  const card = selectionBox.getBoundingClientRect().height;
+  const pt = map.latLngToContainerPoint([it.lat, it.lng]);
+  const limit = map.getSize().y - card - 40;
+  if (pt.y > limit) map.panBy([0, pt.y - limit / 2], { animate: true });
+}
+
+function originPoint(): { lat: number; lng: number } {
+  const c = map?.getCenter();
+  return state.here ?? (c ? { lat: c.lat, lng: c.lng } : { lat: 35.5, lng: 139.4 });
+}
+
+function startTracking(): void {
+  stopTracking();
+  state.tracking = true;
+  state.hereStatus = '現在地を確認しています…';
+  followMap = true;
+  let first = true;
+  stopWatch = watchPosition(
+    (pos) => {
+      state.here = { lat: pos.lat, lng: pos.lng };
+      state.acc = pos.acc;
+      state.hereStatus = '';
+      if (!location.hash.startsWith('#/nearby')) return stopTracking();
+      hereStatusEl.hidden = true;
+      drawHere();
+      if (followMap && map) centerWithCard(pos.lat, pos.lng, first ? 15 : map.getZoom(), !first);
+      first = false;
+      const now = Date.now();
+      if (now - lastListUpdate > 3000) {
+        lastListUpdate = now;
+        updateNearbyList();
+      }
     },
-    state.here ? '現在地を更新' : '現在地を使う',
+    (msg) => {
+      stopTracking();
+      state.hereStatus = msg;
+      if (location.hash.startsWith('#/nearby')) renderNearby(false);
+    },
   );
-  const centerBtn = h(
+}
+
+function renderNearby(fit = true): void {
+  const { panel } = exploreShell('nearby', '地図から選ぶ');
+  map?.getContainer().parentElement?.append(selectionBox);
+  const l = getLibrary();
+  if (!l) loadLibrary().then(() => location.hash.startsWith('#/nearby') && renderNearby()).catch(() => {});
+  if (!stampsLoaded()) loadStamps().then(() => location.hash.startsWith('#/nearby') && renderNearby(false)).catch(() => {});
+
+  const trackBtn = h(
     'button',
     {
       type: 'button',
-      class: 'btn btn-ghost',
+      class: `btn${state.tracking ? ' btn-on' : ''}`,
+      'aria-pressed': state.tracking ? 'true' : 'false',
       onclick: () => {
-        state.here = null;
-        hereLayer?.clearLayers();
-        renderNearby();
+        if (state.tracking) stopTracking();
+        else startTracking();
+        renderNearby(false);
       },
     },
-    '地図の中心から並べる',
+    state.tracking ? '■ 現在地を追うのをやめる' : '◎ 現在地から追う',
   );
+  const centerBtn = state.tracking
+    ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => { followMap = true; if (state.here && map) centerWithCard(state.here.lat, state.here.lng, Math.max(map.getZoom(), 15), true); } }, '現在地に戻る')
+    : state.here
+      ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => { state.here = null; hereLayer?.clearLayers(); renderNearby(false); } }, '地図の中心から並べる')
+      : null;
 
-  add(panel, 
-    h('div', { class: 'row' }, locateBtn, centerBtn),
-    h('p', { class: 'note' }, '現在地はこの端末の中だけで距離の計算に使います。どこにも送信・保存しません。'),
-    state.hereStatus ? h('p', { class: 'status' }, state.hereStatus) : null,
+  add(
+    panel,
+    h('div', { class: 'row' }, trackBtn, centerBtn),
+    state.tracking
+      ? h('p', { class: 'note' }, `現在地を追っています${state.acc ? `（誤差 約${Math.round(state.acc)}m）` : ''}。位置はこの端末の中だけで使い、送信・保存しません。この画面を離れると止まります。`)
+      : h('p', { class: 'note' }, '地図のピンを押すと、その場所を選べます。現在地はこの端末の中だけで距離の計算に使い、どこにも送信・保存しません。'),
+    hereStatusEl,
     nearbyList,
   );
   updateNearbyList();
-  drawMarkers(null, false);
+  drawItems(mapItems(l), fit && !state.tracking);
+  if (map) {
+    map.off('dragstart');
+    map.on('dragstart', () => {
+      followMap = false;
+    });
+  }
 }
 
+const selectionBox = h('div', { class: 'select-overlay', 'aria-live': 'polite' });
+const hereStatusEl = h('p', { class: 'status', role: 'status' });
 const nearbyList = h('div', {});
+
+function itemDistance(it: MapItem): number | null {
+  return state.here ? distanceKm(state.here.lat, state.here.lng, it.lat, it.lng) : null;
+}
+
+function quickStampButton(it: MapItem, small = false): HTMLElement {
+  const done = !!stampsLoaded()?.get(it.stamp)?.personal;
+  return h(
+    'button',
+    {
+      type: 'button',
+      class: `btn${done ? ' btn-ghost' : ''}${small ? ' btn-sm' : ''}`,
+      disabled: done,
+      onclick: () => setPersonal(it.stamp, today(), '').then(() => renderNearby(false)),
+    },
+    done ? '✓ スタンプ済み' : 'スタンプを押す',
+  );
+}
+
 function updateNearbyList(): void {
+  hereStatusEl.textContent = state.hereStatus;
+  hereStatusEl.hidden = !state.hereStatus;
+  const l = getLibrary();
+  const items = mapItems(l);
+  const origin = originPoint();
+  const sorted = items.map((it) => ({ it, d: distanceKm(origin.lat, origin.lng, it.lat, it.lng) })).sort((a, b) => a.d - b.d);
+
+  // 選んだ場所
+  clear(selectionBox);
+  const sel = items.find((i) => i.key === state.selected);
+  if (sel) {
+    const d = itemDistance(sel);
+    add(
+      selectionBox,
+      h(
+        'div',
+        { class: 'select-card' },
+        h('button', { type: 'button', class: 'close', 'aria-label': '選択を解除', onclick: () => { state.selected = ''; renderNearby(false); } }, '×'),
+        h('span', { class: `kind kind-${sel.pin}` }, sel.label),
+        h('strong', { class: 'card-title' }, sel.name),
+        d !== null ? h('span', { class: 'card-sub' }, d <= NEAR_KM ? h('strong', { class: 'near-tag' }, 'すぐ近く') : null, ` 現在地から直線距離${formatKm(d)}`) : null,
+        h('div', { class: 'row' }, h('a', { href: sel.href, class: 'btn btn-sm' }, '詳しく見る'), quickStampButton(sel, true)),
+      ),
+    );
+  }
+
+  // 近くに来たとき
   clear(nearbyList);
-  const c = map?.getCenter();
-  const origin = state.here ?? (c ? { lat: c.lat, lng: c.lng } : { lat: 35.5, lng: 139.4 });
-  const sorted = places
-    .filter(hasCoord)
-    .map((p) => ({ p, d: distanceKm(origin.lat, origin.lng, p.lat, p.lng) }))
-    .sort((a, b) => a.d - b.d);
-  const pending = places.filter((p) => !hasCoord(p));
-  add(nearbyList, 
+  if (state.tracking && state.here) {
+    const close = sorted.filter((x) => x.d <= NEAR_KM && x.it.key !== state.selected);
+    for (const { it, d } of close.slice(0, 3))
+      add(nearbyList, h('div', { class: 'near-banner' }, h('p', {}, h('strong', {}, `${it.name}`), ` のすぐ近くです（${formatKm(d)}）`), h('div', { class: 'row' }, h('a', { href: it.href, class: 'btn btn-ghost btn-sm' }, '詳しく見る'), quickStampButton(it))));
+  }
+
+  const pendingSpots = l ? l.spots.filter((s) => !spotHasCoord(s)).length : 0;
+  const pendingCastles = l ? l.castles.filter((c) => !c.same.some((id) => items.some((i) => i.key === id))).length : 0;
+  add(
+    nearbyList,
     h('h2', {}, state.here ? '現在地から近い順' : '地図の中心から近い順'),
     state.here ? null : h('p', { class: 'note' }, '地図を動かすと、並び順が変わります。'),
-    h('div', { class: 'cards' }, sorted.map(({ p, d }) => placeCard(p, `直線距離${formatKm(d)}`))),
-    pending.length
+    h(
+      'div',
+      { class: 'cards' },
+      sorted.map(({ it, d }) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            class: `card card-btn${state.selected === it.key ? ' card-sel' : ''}`,
+            onclick: () => {
+              state.selected = it.key;
+              followMap = false;
+              map?.setView([it.lat, it.lng], Math.max(map.getZoom(), 14));
+              renderNearby(false);
+              keepAboveCard(it);
+              map?.getContainer().scrollIntoView({ behavior: 'smooth', block: 'center' });
+            },
+          },
+          h('span', { class: `kind kind-${it.pin}` }, it.label),
+          h('strong', { class: 'card-title' }, it.name),
+          h('span', { class: 'card-sub' }, `直線距離${formatKm(d)}${stampsLoaded()?.get(it.stamp)?.personal ? '・スタンプ済み' : ''}`),
+        ),
+      ),
+    ),
+    l
       ? h(
           'div',
-          {},
-          h('h3', {}, '地図上の位置を確認中の施設'),
-          h('p', { class: 'note' }, '所在地は公式情報で確認済みですが、地図上の位置をまだ確認できていないため、距離の計算から外しています。'),
-          h('div', { class: 'cards' }, pending.map((p) => placeCard(p))),
+          { class: 'pending' },
+          h('h3', {}, '地図上の位置を照合中の場所'),
+          h('p', { class: 'note' }, `歴史スポット${pendingSpots}か所、日本100名城®・続日本100名城®${pendingCastles}城は、公的資料で位置を照合できていないため、まだ地図と距離の計算に入れていません（推定の位置は表示しません）。`),
+          h('div', { class: 'row' }, h('a', { href: '#/trip', class: 'btn btn-ghost btn-sm' }, '都道府県から探す'), h('a', { href: '#/stamps', class: 'btn btn-ghost btn-sm' }, 'スタンプ帳から探す')),
         )
       : null,
   );
@@ -1281,24 +1501,32 @@ function stampPanel(key: string, allowOfficial: boolean): HTMLElement {
   const fail = (e: unknown) => (msg.textContent = (e as Error).message);
   add(box, h('h2', {}, 'スタンプ'));
 
-  // 個人スタンプ
+  // 個人スタンプ：ワンタップで押せる。訪問日・メモは必要なときだけ開いて入力する
   const p = rec?.personal;
   const visited = h('input', { type: 'date', class: 'inp', 'aria-label': '訪問日（任意）', max: today(), value: p?.visited ?? '' });
-  const memo = h('input', { type: 'text', class: 'inp', 'aria-label': 'メモ（任意）', maxlength: String(MEMO_MAX), placeholder: 'メモ（任意・200字まで）', value: p?.memo ?? '' });
+  const memo = h('input', { type: 'text', class: 'inp', 'aria-label': 'メモ（任意）', maxlength: String(MEMO_MAX), placeholder: '200字まで', value: p?.memo ?? '' });
   add(
     box,
     h(
       'div',
       { class: `stamp-card${p ? ' stamp-on' : ''}` },
-      h('div', { class: 'stamp-head' }, h('span', { class: 'stamp-mark', 'aria-hidden': 'true' }, p ? '訪' : '・'), h('strong', {}, '個人スタンプ'), p ? h('span', { class: 'muted' }, `押した日 ${p.at}`) : null),
-      h('p', { class: 'muted' }, 'あなたの訪問記録です。いつでも押せます。'),
-      h('label', { class: 'fld' }, '訪問日（任意）', visited),
-      h('label', { class: 'fld' }, 'メモ（任意）', memo),
+      h('div', { class: 'stamp-head' }, h('span', { class: 'stamp-mark', 'aria-hidden': 'true' }, p ? '訪' : '未'), h('strong', {}, '個人スタンプ'), p ? h('span', { class: 'muted' }, `押した日 ${p.at}`) : null),
+      p
+        ? h('p', {}, p.visited ? `訪問日 ${p.visited}` : '訪問日 未入力', p.memo ? `・${p.memo}` : '')
+        : h('p', { class: 'muted' }, 'あなたの訪問記録です。いつでも押せます。'),
+      p ? null : h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: () => setPersonal(key, today(), '').then(route, fail) }, '個人スタンプを押す')),
       h(
-        'div',
-        { class: 'row' },
-        h('button', { type: 'button', class: 'btn', onclick: () => setPersonal(key, visited.value, memo.value).then(route, fail) }, p ? '記録を更新' : '個人スタンプを押す'),
-        p ? confirmBtn('取り消す', () => removePersonal(key).then(route, fail)) : null,
+        'details',
+        { class: 'stamp-more' },
+        h('summary', {}, p ? '訪問日・メモを編集／取り消す' : '訪問日やメモを付けて押す'),
+        h('label', { class: 'fld' }, '訪問日（任意）', visited),
+        h('label', { class: 'fld' }, 'メモ（任意）', memo),
+        h(
+          'div',
+          { class: 'row' },
+          h('button', { type: 'button', class: 'btn btn-sm', onclick: () => setPersonal(key, visited.value, memo.value).then(route, fail) }, p ? '記録を更新' : 'この内容で押す'),
+          p ? confirmBtn('取り消す', () => removePersonal(key).then(route, fail)) : null,
+        ),
       ),
     ),
   );
@@ -1324,18 +1552,20 @@ function stampPanel(key: string, allowOfficial: boolean): HTMLElement {
       h(
         'div',
         { class: `stamp-card${o ? ' stamp-on' : ''}` },
-        h('div', { class: 'stamp-head' }, h('span', { class: 'stamp-mark stamp-mark-off', 'aria-hidden': 'true' }, o ? '城' : '・'), h('strong', {}, '公式スタンプの写真記録'), o ? h('span', { class: 'muted' }, `記録した日 ${o.at}`) : null),
+        h('div', { class: 'stamp-head' }, h('span', { class: 'stamp-mark stamp-mark-off', 'aria-hidden': 'true' }, o ? '城' : '未'), h('strong', {}, '公式スタンプの写真記録'), o ? h('span', { class: 'muted' }, `記録した日 ${o.at}`) : null),
         h('p', { class: 'muted' }, '日本城郭協会のスタンプ帳に押した実物のスタンプを撮影して残せます。写真はこの端末の中だけに保存し、撮影場所などの位置情報は取り除きます。'),
         o ? h('img', { src: photoUrl(o.photo), alt: '公式スタンプの写真（ご自身の記録）', class: 'stamp-photo' }) : null,
-        h('label', { class: 'fld' }, 'スタンプを押した日（任意）', odate),
-        h(
-          'div',
-          { class: 'row' },
-          fileInput,
-          h('label', { for: `photo-${key}`, class: 'btn', role: 'button', tabindex: '0' }, o ? '撮り直す' : '公式スタンプを撮影'),
-          o ? h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => setOfficialDate(key, odate.value).then(route, fail) }, '日付を保存') : null,
-          o ? confirmBtn('写真を削除', () => removeOfficial(key).then(route, fail)) : null,
-        ),
+        o && o.date ? h('p', {}, `スタンプを押した日 ${o.date}`) : null,
+        h('div', { class: 'row' }, fileInput, h('label', { for: `photo-${key}`, class: `btn${o ? ' btn-ghost' : ''}`, role: 'button', tabindex: '0' }, o ? '撮り直す' : '公式スタンプを撮影')),
+        o
+          ? h(
+              'details',
+              { class: 'stamp-more' },
+              h('summary', {}, '押した日を記録／写真を削除'),
+              h('label', { class: 'fld' }, 'スタンプを押した日（任意）', odate),
+              h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn btn-sm', onclick: () => setOfficialDate(key, odate.value).then(route, fail) }, '日付を保存'), confirmBtn('写真を削除', () => removeOfficial(key).then(route, fail))),
+            )
+          : null,
         h('p', { class: 'muted small' }, 'スタンプの図柄は各城・日本城郭協会などの著作物です。写真はご自身の記録用とし、SNSなどへの公開はお控えください。'),
       ),
     );
@@ -1481,7 +1711,7 @@ function searchForm(autofocus = false): HTMLFormElement {
     type: 'search',
     name: 'q',
     class: 'search-input',
-    placeholder: '人物・城・出来事・地名・年など',
+    placeholder: '人物・城・出来事・地名など',
     'aria-label': '検索する言葉',
     maxlength: '100',
     autocomplete: 'off',
@@ -1686,7 +1916,7 @@ function renderAbout(): void {
       h('h2', { id: 'privacy' }, 'プライバシーポリシー（個人情報の取り扱い）'),
       h('p', {}, 'このアプリはログインや会員登録がなく、運営者のサーバーで利用者の個人情報を収集・保存しません。'),
       h('h3', {}, '1. 現在地（位置情報）'),
-      h('p', {}, '「現在地を使う」を押し、ブラウザで許可したときだけ取得します。取得した位置は、この端末の中で施設までの距離を計算するためだけに使い、どこにも送信・保存しません。ページを閉じると破棄されます。'),
+      h('p', {}, '「現在地から追う」を押し、ブラウザで許可したときだけ取得します。オンにしている間は位置を繰り返し取得し、地図上の現在地の表示と、場所までの距離の計算・近くに来たときのお知らせにだけ使います。位置はどこにも送信・保存せず、オフにする、またはこの画面を離れると取得を止めて破棄します。'),
       h('h3', {}, '2. 端末内に保存する情報'),
       h('p', {}, '「行きたい」に登録した施設・スポットの一覧を、お使いのブラウザの保存領域（localStorage）に保存します。'),
       h('p', {}, 'スタンプ帳の記録（個人スタンプを押した日・訪問日・メモ、公式スタンプの写真と押した日）を、お使いのブラウザの保存領域（IndexedDB）に保存します。訪問の記録は行動の履歴にあたるため、運営者は受け取らず、外部にも送信しません。'),
@@ -1785,6 +2015,11 @@ function go(hash: string): void {
 
 function route(): void {
   photoUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
+  if (!location.hash.startsWith('#/nearby') && state.tracking) {
+    stopTracking();
+    state.here = null; // 画面を離れたら現在地を破棄する
+    hereLayer?.clearLayers();
+  }
   const hash = location.hash || '#/';
   const [, view, arg] = hash.split('/');
   switch (view) {

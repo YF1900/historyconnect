@@ -3,7 +3,7 @@
  * 電波が弱い場所でも画面を開けるようにする。
  * 地図タイルなど外部サイトへの通信はキャッシュせず、そのままブラウザに任せる。
  */
-const CACHE = 'historyconnect-v3';
+const CACHE = 'historyconnect-v4';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html', './manifest.webmanifest'])));

@@ -37,3 +37,28 @@ export function getCurrentPosition(): Promise<{ lat: number; lng: number }> {
     );
   });
 }
+
+/**
+ * 現在地を追い続ける（「現在地を追う」をオンにしている間だけ）。
+ * 位置は端末のメモリ上でのみ使い、保存・送信はしない。戻り値の関数で停止する。
+ */
+export function watchPosition(
+  onPos: (p: { lat: number; lng: number; acc: number }) => void,
+  onErr: (msg: string) => void,
+): () => void {
+  if (!('geolocation' in navigator)) {
+    onErr('この端末・ブラウザでは現在地を取得できません。');
+    return () => {};
+  }
+  const id = navigator.geolocation.watchPosition(
+    (pos) => onPos({ lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy }),
+    (err) =>
+      onErr(
+        err.code === err.PERMISSION_DENIED
+          ? '現在地の利用が許可されませんでした。ブラウザの設定で許可すると使えます。'
+          : '現在地を取得できませんでした。電波の良い場所で再度お試しください。',
+      ),
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 },
+  );
+  return () => navigator.geolocation.clearWatch(id);
+}

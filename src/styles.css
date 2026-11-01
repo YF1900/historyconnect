@@ -213,3 +213,44 @@ button { font: inherit; }
 .cell-p { border-color: #8b2e1f; background: #fff4ef; }
 .cell-o { box-shadow: inset 0 0 0 2px #2f4f8a; }
 .legend-inline { font-size: 0.85rem; }
+
+/* ---- 地図から選ぶ・現在地から追う ---- */
+.btn-on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+.btn[disabled] { opacity: 0.6; cursor: default; }
+.select-card { position: relative; border: 2px solid var(--accent); border-radius: 12px; padding: 12px 40px 12px 12px; margin: 8px 0 12px; background: #fff; display: flex; flex-direction: column; gap: 4px; }
+.select-card .close { position: absolute; top: 4px; right: 4px; width: 40px; height: 40px; border: 0; background: transparent; font-size: 1.4rem; cursor: pointer; }
+.near-banner { border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: #eef5ff; border: 1px solid #93c5fd; }
+.near-banner p { margin: 0 0 6px; }
+.card-sel { outline: 3px solid #f59e0b; }
+.pending { margin-top: 16px; }
+
+/* ---- UXテスト 1回目の改善 ---- */
+.map-wrap { position: relative; }
+.select-overlay { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 1000; }
+.select-overlay:empty { display: none; }
+.select-overlay .select-card { margin: 0; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+.select-card .kind { align-self: flex-start; }
+.select-card .row { flex-wrap: nowrap; }
+.select-card .row .btn { flex: 1; text-align: center; padding-left: 8px; padding-right: 8px; }
+.near-tag { color: #fff; background: #1d4ed8; border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; }
+.chip-btn { min-height: 36px; display: inline-flex; align-items: center; }
+.brand { display: inline-flex; align-items: center; min-height: 40px; }
+.leaflet-touch .leaflet-bar a { width: 40px; height: 40px; line-height: 40px; }
+
+/* ---- UXテスト 2回目の改善 ---- */
+.select-overlay { bottom: 26px; }
+.select-card { padding: 8px 40px 8px 10px; gap: 2px; }
+.select-card .card-title { font-size: 1rem; }
+.select-card .close { width: 40px; height: 40px; top: 0; right: 0; }
+.tabs { top: calc(env(safe-area-inset-top) + 56px); }
+
+/* ---- UXテスト 3回目の改善 ---- */
+@media (max-width: 899px) { .explore .map-wrap { height: 52dvh; } }
+.stamp-more { margin-top: 8px; }
+.stamp-more summary { cursor: pointer; padding: 8px 0; color: var(--accent); min-height: 36px; }
+.stamp-mark { font-size: 0.8rem; }
+
+/* ---- UXテスト 5回目の改善 ---- */
+.select-overlay { bottom: 30px; }
+@media (min-width: 900px) { .select-overlay { right: auto; width: 380px; } }
+@media (min-width: 900px) { .explore { height: calc(100dvh - 104px); } }
